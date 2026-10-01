@@ -2,7 +2,7 @@
   "id": "wb_1790745951188_5xlw",
   "title": "项目记事",
   "createdAt": 1790745951188,
-  "updatedAt": 1790829195137,
+  "updatedAt": 1790830046058,
   "elements": [
     {
       "id": "el_1790828846568_m4mtxr",
@@ -1891,7 +1891,7 @@
       "id": "el_1790828888446_tms5wr",
       "type": "frame",
       "x": 60,
-      "y": 1000,
+      "y": 1028,
       "width": 1220,
       "height": 150,
       "angle": 0,
@@ -1906,11 +1906,11 @@
       "frameId": null,
       "roundness": null,
       "seed": 1247298801,
-      "version": 2,
-      "versionNonce": 2018898326,
+      "version": 30,
+      "versionNonce": 1115739466,
       "isDeleted": false,
       "boundElements": null,
-      "updated": 1790828888462,
+      "updated": 1790830039625,
       "link": null,
       "locked": false,
       "name": "开发阶段",
@@ -1920,7 +1920,7 @@
       "id": "el_1790828888446_7uzy5m",
       "type": "rectangle",
       "x": 100,
-      "y": 1055,
+      "y": 1083,
       "width": 170,
       "height": 70,
       "angle": 0,
@@ -1937,8 +1937,8 @@
         "type": 3
       },
       "seed": 1462547212,
-      "version": 2,
-      "versionNonce": 1433148106,
+      "version": 30,
+      "versionNonce": 1117355094,
       "isDeleted": false,
       "boundElements": [
         {
@@ -1946,7 +1946,7 @@
           "type": "text"
         }
       ],
-      "updated": 1790828888465,
+      "updated": 1790830039630,
       "link": null,
       "locked": false,
       "index": "aq"
@@ -1955,7 +1955,7 @@
       "id": "el_1790828888446_t943to",
       "type": "text",
       "x": 136,
-      "y": 1079,
+      "y": 1107,
       "width": 99,
       "height": 23,
       "angle": 0,
@@ -1970,11 +1970,11 @@
       "frameId": null,
       "roundness": null,
       "seed": 1169418484,
-      "version": 2,
-      "versionNonce": 453988054,
+      "version": 30,
+      "versionNonce": 1795922954,
       "isDeleted": false,
       "boundElements": null,
-      "updated": 1790828888469,
+      "updated": 1790830039635,
       "link": null,
       "locked": false,
       "text": "A 协议冻结",
@@ -1993,7 +1993,7 @@
       "id": "el_1790828888446_3vhu5l",
       "type": "rectangle",
       "x": 300,
-      "y": 1055,
+      "y": 1083,
       "width": 170,
       "height": 70,
       "angle": 0,
@@ -2010,8 +2010,8 @@
         "type": 3
       },
       "seed": 2036935265,
-      "version": 2,
-      "versionNonce": 1534210442,
+      "version": 30,
+      "versionNonce": 1377010070,
       "isDeleted": false,
       "boundElements": [
         {
@@ -2019,7 +2019,7 @@
           "type": "text"
         }
       ],
-      "updated": 1790828888472,
+      "updated": 1790830039640,
       "link": null,
       "locked": false,
       "index": "as"
@@ -2028,7 +2028,7 @@
       "id": "el_1790828888446_slr78z",
       "type": "text",
       "x": 346,
-      "y": 1079,
+      "y": 1107,
       "width": 79,
       "height": 23,
       "angle": 0,
@@ -2043,11 +2043,11 @@
       "frameId": null,
       "roundness": null,
       "seed": 203322913,
-      "version": 2,
-      "versionNonce": 1898644502,
+      "version": 30,
+      "versionNonce": 739216074,
       "isDeleted": false,
       "boundElements": null,
-      "updated": 1790828888475,
+      "updated": 1790830039645,
       "link": null,
       "locked": false,
       "text": "B 传输层",
@@ -2066,7 +2066,7 @@
       "id": "el_1790828888446_xy6i4f",
       "type": "rectangle",
       "x": 500,
-      "y": 1055,
+      "y": 1083,
       "width": 170,
       "height": 70,
       "angle": 0,
@@ -2083,8 +2083,8 @@
         "type": 3
       },
       "seed": 1290977136,
-      "version": 2,
-      "versionNonce": 1309110346,
+      "version": 30,
+      "versionNonce": 110812886,
       "isDeleted": false,
       "boundElements": [
         {
@@ -2092,7 +2092,7 @@
           "type": "text"
         }
       ],
-      "updated": 1790828888479,
+      "updated": 1790830039650,
       "link": null,
       "locked": false,
       "index": "au"
@@ -2101,7 +2101,7 @@
       "id": "el_1790828888446_mw69h5",
       "type": "text",
       "x": 555,
-      "y": 1079,
+      "y": 1107,
       "width": 60,
       "height": 23,
       "angle": 0,
@@ -2116,11 +2116,11 @@
       "frameId": null,
       "roundness": null,
       "seed": 14259514,
-      "version": 2,
-      "versionNonce": 211685718,
+      "version": 30,
+      "versionNonce": 1814536586,
       "isDeleted": false,
       "boundElements": null,
-      "updated": 1790828888482,
+      "updated": 1790830039655,
       "link": null,
       "locked": false,
       "text": "C 内核",
@@ -2139,7 +2139,7 @@
       "id": "el_1790828888446_3rmyes",
       "type": "rectangle",
       "x": 700,
-      "y": 1055,
+      "y": 1083,
       "width": 170,
       "height": 70,
       "angle": 0,
@@ -2156,8 +2156,8 @@
         "type": 3
       },
       "seed": 1308038015,
-      "version": 2,
-      "versionNonce": 554096394,
+      "version": 30,
+      "versionNonce": 79991830,
       "isDeleted": false,
       "boundElements": [
         {
@@ -2165,7 +2165,7 @@
           "type": "text"
         }
       ],
-      "updated": 1790828888485,
+      "updated": 1790830039660,
       "link": null,
       "locked": false,
       "index": "aw"
@@ -2174,7 +2174,7 @@
       "id": "el_1790828888446_0r6cfe",
       "type": "text",
       "x": 755,
-      "y": 1079,
+      "y": 1107,
       "width": 60,
       "height": 23,
       "angle": 0,
@@ -2189,11 +2189,11 @@
       "frameId": null,
       "roundness": null,
       "seed": 1972711028,
-      "version": 2,
-      "versionNonce": 2025682582,
+      "version": 30,
+      "versionNonce": 110026826,
       "isDeleted": false,
       "boundElements": null,
-      "updated": 1790828888489,
+      "updated": 1790830039665,
       "link": null,
       "locked": false,
       "text": "D 插件",
@@ -2212,7 +2212,7 @@
       "id": "el_1790828888446_1ndlru",
       "type": "rectangle",
       "x": 900,
-      "y": 1055,
+      "y": 1083,
       "width": 170,
       "height": 70,
       "angle": 0,
@@ -2229,8 +2229,8 @@
         "type": 3
       },
       "seed": 1101110627,
-      "version": 2,
-      "versionNonce": 350971338,
+      "version": 30,
+      "versionNonce": 377856342,
       "isDeleted": false,
       "boundElements": [
         {
@@ -2238,7 +2238,7 @@
           "type": "text"
         }
       ],
-      "updated": 1790828888492,
+      "updated": 1790830039670,
       "link": null,
       "locked": false,
       "index": "ay"
@@ -2247,7 +2247,7 @@
       "id": "el_1790828888446_sw11ak",
       "type": "text",
       "x": 956,
-      "y": 1079,
+      "y": 1107,
       "width": 59,
       "height": 23,
       "angle": 0,
@@ -2262,11 +2262,11 @@
       "frameId": null,
       "roundness": null,
       "seed": 293787501,
-      "version": 2,
-      "versionNonce": 238957526,
+      "version": 30,
+      "versionNonce": 924862218,
       "isDeleted": false,
       "boundElements": null,
-      "updated": 1790828888495,
+      "updated": 1790830039675,
       "link": null,
       "locked": false,
       "text": "E 协同",
@@ -2285,7 +2285,7 @@
       "id": "el_1790828888446_x06sm2",
       "type": "rectangle",
       "x": 1100,
-      "y": 1055,
+      "y": 1083,
       "width": 170,
       "height": 70,
       "angle": 0,
@@ -2302,8 +2302,8 @@
         "type": 3
       },
       "seed": 798137256,
-      "version": 2,
-      "versionNonce": 584064138,
+      "version": 30,
+      "versionNonce": 2134050454,
       "isDeleted": false,
       "boundElements": [
         {
@@ -2311,7 +2311,7 @@
           "type": "text"
         }
       ],
-      "updated": 1790828888499,
+      "updated": 1790830039680,
       "link": null,
       "locked": false,
       "index": "b00"
@@ -2320,7 +2320,7 @@
       "id": "el_1790828888446_pmtx6u",
       "type": "text",
       "x": 1156,
-      "y": 1079,
+      "y": 1107,
       "width": 58,
       "height": 23,
       "angle": 0,
@@ -2335,11 +2335,11 @@
       "frameId": null,
       "roundness": null,
       "seed": 1463850567,
-      "version": 2,
-      "versionNonce": 1194674454,
+      "version": 30,
+      "versionNonce": 106354122,
       "isDeleted": false,
       "boundElements": null,
-      "updated": 1790828888502,
+      "updated": 1790830039685,
       "link": null,
       "locked": false,
       "text": "F 交付",
@@ -3359,15 +3359,52 @@
       "autoResize": true,
       "lineHeight": 1.15,
       "index": "b0L"
+    },
+    {
+      "id": "OY8wnnyGZGW2PowoZU4mb",
+      "type": "text",
+      "x": 608.8521194809507,
+      "y": 1243.609564021749,
+      "width": 5.556640625,
+      "height": 23,
+      "angle": 0,
+      "strokeColor": "#1e1e1e",
+      "backgroundColor": "transparent",
+      "fillStyle": "solid",
+      "strokeWidth": 2,
+      "strokeStyle": "solid",
+      "roughness": 0,
+      "opacity": 100,
+      "groupIds": [],
+      "frameId": null,
+      "index": "b0M",
+      "roundness": null,
+      "seed": 1088137162,
+      "version": 3,
+      "versionNonce": 329585750,
+      "isDeleted": true,
+      "boundElements": null,
+      "updated": 1790830031633,
+      "link": null,
+      "locked": false,
+      "text": "",
+      "fontSize": 20,
+      "fontFamily": 2,
+      "textAlign": "left",
+      "verticalAlign": "top",
+      "containerId": null,
+      "originalText": "",
+      "autoResize": true,
+      "lineHeight": 1.15
     }
   ],
   "appState": {
     "viewBackgroundColor": "#ffffff",
     "zoom": {
-      "value": 0.64721
+      "value": 0.490799
     },
-    "scrollX": -287.47265995467643,
-    "scrollY": -157.4087945651583
+    "scrollX": 289.6906706223913,
+    "scrollY": 192.0480582745513
   },
   "files": {}
 }
