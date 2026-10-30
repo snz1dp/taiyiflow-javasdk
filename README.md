@@ -63,7 +63,7 @@ taiyiflow-javasdk/
 
 ### 环境要求
 
-- Java 17+
+- Java 17+（虚拟线程支持）
 - Maven 3.8+
 - 可访问的 TaiyiFlow 后端服务
 
@@ -73,20 +73,31 @@ taiyiflow-javasdk/
 // 1. 创建智能体实例
 TaiyiAgent agent = TaiyiAgent.builder()
     .baseUrl("http://localhost:8080")
-    .token("your-api-token")
+    .apiKey("your-api-key")
     .flowId("my-agent-flow")
     .build();
 
-// 2. 发起会话
+// 2. 发起会话 + 挂 StreamHook 接收流式回复
 AgentSession session = agent.newSession();
-
-// 3. 发送消息，通过 StreamHook 接收流式回复
-session.chat("你好，请介绍一下你自己", new StreamHook() {
+session.onStream(new StreamHook() {
     @Override
-    public void onChunk(String text) {
-        System.out.print(text);
+    public void onChunk(String sessionId, String chunk) {
+        System.out.print(chunk);
     }
 });
+
+// 3. 发送消息
+session.chat("你好，请介绍一下你自己");
+session.await();
+agent.shutdown();
+```
+
+### 环境变量（示例程序）
+
+```bash
+export TAIYIFLOW_BASE_URL=https://api.taiyiflow.io
+export TAIYIFLOW_API_KEY=your-api-key
+export TAIYIFLOW_FLOW_ID=your-flow-id
 ```
 
 ### 挂 Hook 定制行为
@@ -94,24 +105,26 @@ session.chat("你好，请介绍一下你自己", new StreamHook() {
 ```java
 TaiyiAgent agent = TaiyiAgent.builder()
     .baseUrl("http://localhost:8080")
-    .token("your-api-token")
+    .apiKey("your-api-key")
     .flowId("my-agent-flow")
     // 工具执行拦截：接管特定工具的执行
-    .toolExecutionHook(new ToolExecutionHook() {
+    .onToolExecution(new ToolExecutionHook() {
         @Override
-        public Optional<ToolResult> takeover(ToolCall call) {
-            if ("custom_tool".equals(call.name())) {
-                return Optional.of(myCustomExecutor.execute(call));
+        public ToolResult takeover(String sessionId, ToolCall toolCall) {
+            if ("get_weather".equals(toolCall.getName())) {
+                ObjectNode weather = mapper.createObjectNode();
+                weather.put("temperature", 22);
+                return ToolResult.success(toolCall.getId(), weather);
             }
-            return Optional.empty(); // 走内置插件
+            return null; // 走内置插件
         }
     })
-    // 权限审批：拦截写操作
-    .permissionHook(call -> {
-        if (isWriteOperation(call)) {
-            return PermissionDecision.ask(); // 向调用者请求审批
+    // 权限审批：拦截 Shell 命令
+    .onPermission((sessionId, toolCall) -> {
+        if ("shell".equals(toolCall.getName())) {
+            return PermissionHook.Decision.DENY;
         }
-        return PermissionDecision.allow();
+        return PermissionHook.Decision.ALLOW;
     })
     .build();
 ```
@@ -120,9 +133,9 @@ TaiyiAgent agent = TaiyiAgent.builder()
 
 ```xml
 <dependency>
-    <groupId>com.taiyiflow</groupId>
-    <artifactId>taiyiflow-java-sdk-spring-boot-starter</artifactId>
-    <version>${taiyiflow.version}</version>
+    <groupId>io.taiyiflow</groupId>
+    <artifactId>taiyiflow-spring-boot-starter</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
 </dependency>
 ```
 
@@ -130,18 +143,35 @@ TaiyiAgent agent = TaiyiAgent.builder()
 # application.yml
 taiyiflow:
   base-url: http://localhost:8080
-  token: ${TAIYIFLOW_TOKEN}
+  api-key: ${TAIYIFLOW_API_KEY}
   flow-id: my-agent-flow
+  sandbox-root: /tmp/taiyiflow-sandbox
+  allowed-shell-commands:
+    - ls
+    - cat
+    - echo
   plugins:
-    shell:
-      enabled: true
-      working-directory: /tmp/sandbox
-    file:
-      enabled: true
-    search:
-      enabled: true
-  collaboration:
-    enabled: false  # 默认关闭
+    shell: true
+    files: true
+    search: true
+  collaboration-enabled: false  # 默认关闭
+```
+
+自动装配后可直接注入 `TaiyiAgent`：
+
+```java
+@Service
+public class MyService {
+    private final TaiyiAgent agent;
+
+    public MyService(TaiyiAgent agent) {
+        this.agent = agent;
+    }
+
+    public void chat(String message) {
+        agent.newSession().onStream(...).chat(message);
+    }
+}
 ```
 
 ## Hook 体系
@@ -252,19 +282,45 @@ ToolExecutionHook.after() ◄──────────────┘
 
 ```
 taiyiflow-javasdk/
-├── pom.xml
-├── taiyiflow-sdk-api/
-├── taiyiflow-sdk-core/
-├── taiyiflow-sdk-transport/
-├── taiyiflow-sdk-capabilities/
-├── taiyiflow-sdk-collaboration/
-├── taiyiflow-sdk-spring-boot-starter/
-├── examples/
-│   ├── minimal/
-│   ├── tool-takeover/
-│   └── collaboration/
-└── .github/
-    └── prompts/
+├── pom.xml                              # Parent POM
+├── taiyiflow-sdk-core/                  # 核心模块
+│   └── src/main/java/io/taiyiflow/sdk/
+│       ├── TaiyiAgent.java              # 智能体门面（Builder 模式）
+│       ├── AgentSession.java            # 会话接口
+│       ├── hooks/                       # Hook SPI（4 个接口）
+│       │   ├── StreamHook.java
+│       │   ├── ToolExecutionHook.java
+│       │   ├── PermissionHook.java
+│       │   └── SessionHook.java
+│       ├── core/
+│       │   ├── session/                 # SessionManager + AgentSessionImpl
+│       │   ├── dispatch/                # ToolDispatcher（Hook 链编排）
+│       │   ├── plugin/                  # PluginManager
+│       │   └── state/                   # SessionState 状态机
+│       └── transport/
+│           ├── envelope/                # 协议模型 + 事件常量
+│           ├── stream/                  # StreamClient (WS) + SseStreamClient
+│           └── rest/                    # RestClient
+├── taiyiflow-sdk-plugins/               # 内置插件
+│   └── src/main/java/io/taiyiflow/sdk/plugins/
+│       ├── BuiltinPlugins.java          # 一键注册
+│       ├── shell/ShellPlugin.java       # Shell 命令执行（白名单 + 沙盒）
+│       ├── files/FilePlugin.java        # 文件读写（沙盒限制）
+│       └── search/SearchPlugin.java     # 文本/正则搜索
+├── taiyiflow-sdk-collaboration/         # 可选协同插件
+│   └── src/main/java/io/taiyiflow/sdk/collaboration/
+│       ├── CollaborationPlugin.java     # 协同 WS（被动接收任务）
+│       └── SchedulePlugin.java          # 定时任务
+├── taiyiflow-spring-boot-starter/       # Spring Boot 自动装配
+│   └── src/main/java/io/taiyiflow/sdk/starter/
+│       ├── TaiyiFlowProperties.java     # 配置属性
+│       └── TaiyiFlowAutoConfiguration.java
+└── taiyiflow-sdk-examples/              # 示例
+    └── src/main/java/io/taiyiflow/sdk/examples/
+        ├── MinimalExample.java          # 最简示例
+        ├── ToolTakeoverExample.java     # 工具接管 + 权限审批
+        ├── MultiSessionExample.java     # 多会话并行
+        └── CollaborationExample.java    # 协同模式
 ```
 
 ## License
