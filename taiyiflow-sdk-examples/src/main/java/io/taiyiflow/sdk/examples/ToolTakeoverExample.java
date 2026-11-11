@@ -10,6 +10,8 @@ import io.taiyiflow.sdk.hooks.ToolExecutionHook;
 import io.taiyiflow.sdk.transport.envelope.ToolCall;
 import io.taiyiflow.sdk.transport.envelope.ToolResult;
 
+import java.util.concurrent.CompletableFuture;
+
 /**
  * Example: Tool takeover - intercept tool calls and provide custom implementations.
  */
@@ -45,12 +47,12 @@ public class ToolTakeoverExample {
                 // Permission hook: deny shell commands
                 .onPermission(new PermissionHook() {
                     @Override
-                    public Decision onPermission(String sessionId, ToolCall toolCall) {
+                    public CompletableFuture<Decision> onPermission(String sessionId, ToolCall toolCall) {
                         if ("shell".equals(toolCall.getName()) || "bash".equals(toolCall.getName())) {
                             System.out.println("[Permission] Denied shell command");
-                            return Decision.DENY;
+                            return CompletableFuture.completedFuture(Decision.DENY);
                         }
-                        return Decision.ALLOW;
+                        return CompletableFuture.completedFuture(Decision.ALLOW);
                     }
                 })
                 .build();

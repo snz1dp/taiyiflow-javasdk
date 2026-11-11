@@ -19,6 +19,9 @@ class FilePluginTest {
     @TempDir
     Path tempDir;
 
+    @TempDir
+    Path outside;
+
     private ToolCall makeCall(String toolName, String jsonArgs) throws Exception {
         return new ToolCall("tc-1", toolName, mapper.readTree(jsonArgs));
     }
@@ -69,6 +72,32 @@ class FilePluginTest {
         ToolResult result = plugin.writeFile(makeCall("write_file",
                 "{\"path\":\"../../evil.txt\",\"content\":\"bad\"}"));
         assertFalse(result.isSuccess());
+    }
+
+    @Test
+    void symbolicLinkReadEscapeBlocked() throws Exception {
+        Files.writeString(outside.resolve("secret.txt"), "secret");
+        Files.createSymbolicLink(tempDir.resolve("outside"), outside);
+        FilePlugin plugin = new FilePlugin(tempDir);
+
+        ToolResult result = plugin.readFile(makeCall("read_file", "{\"path\":\"outside/secret.txt\"}"));
+
+        assertFalse(result.isSuccess());
+        assertTrue(result.getError().contains("escapes sandbox"));
+    }
+
+    @Test
+    void symbolicLinkWriteIsRejected() throws Exception {
+        Path outsideFile = outside.resolve("outside.txt");
+        Files.writeString(outsideFile, "original");
+        Files.createSymbolicLink(tempDir.resolve("link.txt"), outsideFile);
+        FilePlugin plugin = new FilePlugin(tempDir);
+
+        ToolResult result = plugin.writeFile(makeCall("write_file",
+                "{\"path\":\"link.txt\",\"content\":\"overwritten\"}"));
+
+        assertFalse(result.isSuccess());
+        assertEquals("original", Files.readString(outsideFile));
     }
 
     @Test

@@ -33,12 +33,15 @@ public class SessionManager {
         return createSession(agent, UUID.randomUUID().toString());
     }
 
-    public AgentSession createSession(TaiyiAgent agent, String sessionId) {
+    public synchronized AgentSession createSession(TaiyiAgent agent, String sessionId) {
         if (sessions.size() >= maxSessions) {
             throw new IllegalStateException("Maximum number of sessions reached: " + maxSessions);
         }
         AgentSessionImpl session = new AgentSessionImpl(agent, sessionId, this);
-        sessions.put(sessionId, session);
+        AgentSessionImpl existing = sessions.putIfAbsent(sessionId, session);
+        if (existing != null) {
+            throw new IllegalStateException("Session ID is already registered: " + sessionId);
+        }
         log.debug("Created session: {}", sessionId);
         return session;
     }
@@ -47,9 +50,36 @@ public class SessionManager {
         return sessions.get(sessionId);
     }
 
+    synchronized void registerSession(AgentSessionImpl session) {
+        AgentSessionImpl existing = sessions.get(session.getSessionId());
+        if (existing != null && existing != session) {
+            throw new IllegalStateException("Session ID is already registered: " + session.getSessionId());
+        }
+        if (existing == null) {
+            if (sessions.size() >= maxSessions) {
+                throw new IllegalStateException("Maximum number of sessions reached: " + maxSessions);
+            }
+            sessions.put(session.getSessionId(), session);
+        }
+    }
+
+    synchronized void updateSessionId(String previousId, String resolvedId, AgentSessionImpl session) {
+        AgentSessionImpl existing = sessions.putIfAbsent(resolvedId, session);
+        if (existing != null && existing != session) {
+            throw new IllegalStateException("Resolved session ID is already registered: " + resolvedId);
+        }
+        sessions.remove(previousId, session);
+    }
+
     public void removeSession(String sessionId) {
         sessions.remove(sessionId);
         log.debug("Removed session: {}", sessionId);
+    }
+
+    void removeSession(String sessionId, AgentSessionImpl session) {
+        if (sessions.remove(sessionId, session)) {
+            log.debug("Removed session: {}", sessionId);
+        }
     }
 
     public void interruptSession(String sessionId) {
@@ -75,6 +105,7 @@ public class SessionManager {
         return (int) sessions.values().stream()
                 .filter(s -> s.getState() != SessionState.DONE
                           && s.getState() != SessionState.ERROR
+                          && s.getState() != SessionState.CANCELLED
                           && s.getState() != SessionState.INTERRUPTED)
                 .count();
     }

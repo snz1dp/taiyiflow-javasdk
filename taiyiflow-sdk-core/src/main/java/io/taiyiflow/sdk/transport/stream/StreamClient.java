@@ -8,9 +8,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.net.URI;
+import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.WebSocket;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -19,6 +21,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 /**
  * WebSocket streaming client for agent runs.
@@ -31,17 +34,28 @@ public class StreamClient {
     private static final long FIRST_MESSAGE_TIMEOUT_MS = 10_000;
 
     private final String baseUrl;
-    private final String apiKey;
+    private final Supplier<String> accessToken;
     private final String flowId;
+    private final Map<String, String> credentialHeaders;
     private final HttpClient httpClient;
     private final AtomicBoolean closed = new AtomicBoolean(false);
 
     private WebSocket webSocket;
 
     public StreamClient(String baseUrl, String apiKey, String flowId) {
-        this.baseUrl = baseUrl;
-        this.apiKey = apiKey;
+        this(baseUrl, apiKey, flowId, Map.of());
+    }
+
+    public StreamClient(String baseUrl, String apiKey, String flowId, Map<String, String> credentialHeaders) {
+        this(baseUrl, () -> apiKey, flowId, credentialHeaders);
+    }
+
+    public StreamClient(String baseUrl, Supplier<String> accessToken, String flowId,
+                        Map<String, String> credentialHeaders) {
+        this.baseUrl = baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length() - 1) : baseUrl;
+        this.accessToken = accessToken;
         this.flowId = flowId;
+        this.credentialHeaders = Map.copyOf(credentialHeaders);
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(10))
                 .build();
@@ -61,15 +75,25 @@ public class StreamClient {
             Consumer<StreamEvent> onEvent,
             Consumer<String> onClose,
             Consumer<Throwable> onError) {
+        return stream(request, onEvent, onClose, onError, null);
+    }
+
+    public StreamHandle stream(
+            ChatRequest request,
+            Consumer<StreamEvent> onEvent,
+            Consumer<String> onClose,
+            Consumer<Throwable> onError,
+            Runnable onConnectionFailure) {
 
         String wsUrl = buildWebSocketUrl();
-        log.debug("Connecting to: {}", wsUrl);
+        log.debug("Connecting WebSocket for flow: {}", flowId);
 
         CountDownLatch readyLatch = new CountDownLatch(1);
         StreamHandle handle = new StreamHandle();
 
-        CompletableFuture<WebSocket> wsFuture = httpClient.newWebSocketBuilder()
-                .header("Authorization", "Bearer " + apiKey)
+        WebSocket.Builder webSocketBuilder = httpClient.newWebSocketBuilder();
+        credentialHeaders.forEach(webSocketBuilder::header);
+        CompletableFuture<WebSocket> wsFuture = webSocketBuilder
                 .buildAsync(URI.create(wsUrl), new WebSocket.Listener() {
                     private final StringBuilder textBuffer = new StringBuilder();
 
@@ -117,8 +141,18 @@ public class StreamClient {
                 });
 
         wsFuture.thenAccept(ws -> {
+            if (handle.cancelled.get()) {
+                ws.abort();
+                readyLatch.countDown();
+                return;
+            }
             this.webSocket = ws;
             handle.webSocket = ws;
+            if (handle.cancelled.get()) {
+                ws.abort();
+                readyLatch.countDown();
+                return;
+            }
             try {
                 String json = mapper.writeValueAsString(request);
                 ws.sendText(json, true);
@@ -129,7 +163,11 @@ public class StreamClient {
                 readyLatch.countDown();
             }
         }).exceptionally(ex -> {
-            onError.accept(ex);
+            if (onConnectionFailure != null) {
+                onConnectionFailure.run();
+            } else {
+                onError.accept(ex);
+            }
             readyLatch.countDown();
             return null;
         });
@@ -156,41 +194,22 @@ public class StreamClient {
         } else if (!base.startsWith("ws://") && !base.startsWith("wss://")) {
             base = "wss://" + base;
         }
-        return base + "/api/v1/run/" + flowId + "/websocket";
+        return base + "/api/v1/run/" + flowId + "/websocket?__TOKEN__="
+                + URLEncoder.encode(accessToken.get(), StandardCharsets.UTF_8);
     }
 
     /**
      * Handle for controlling an active stream.
      */
     public static class StreamHandle {
+        private final AtomicBoolean cancelled = new AtomicBoolean();
         private volatile WebSocket webSocket;
-
-        /**
-         * Send a tool result back to the agent.
-         */
-        public void sendToolResult(String toolCallId, Object result) {
-            if (webSocket == null) {
-                throw new IllegalStateException("Stream not connected");
-            }
-            try {
-                Map<String, Object> payload = Map.of(
-                        "event", "tool_result",
-                        "data", Map.of(
-                                "tool_call_id", toolCallId,
-                                "result", result
-                        )
-                );
-                String json = mapper.writeValueAsString(payload);
-                webSocket.sendText(json, true);
-            } catch (Exception e) {
-                log.error("Failed to send tool result", e);
-            }
-        }
 
         /**
          * Cancel/interrupt the stream.
          */
         public void cancel() {
+            cancelled.set(true);
             if (webSocket != null) {
                 webSocket.sendClose(WebSocket.NORMAL_CLOSURE, "cancelled");
             }
@@ -200,6 +219,7 @@ public class StreamClient {
          * Abort the stream immediately.
          */
         public void abort() {
+            cancelled.set(true);
             if (webSocket != null) {
                 webSocket.abort();
             }

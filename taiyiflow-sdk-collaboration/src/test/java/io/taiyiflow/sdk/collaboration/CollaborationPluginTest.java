@@ -4,6 +4,12 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Proxy;
+import java.net.http.WebSocket;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
+
 import static org.junit.jupiter.api.Assertions.*;
 
 class CollaborationPluginTest {
@@ -46,7 +52,9 @@ class CollaborationPluginTest {
         var method = CollaborationPlugin.class.getDeclaredMethod("buildWebSocketUrl");
         method.setAccessible(true);
         String url = (String) method.invoke(plugin);
-        assertEquals("wss://api.example.com/api/v1/agents/client/websocket", url);
+        assertTrue(url.startsWith("wss://api.example.com/api/v1/agents/client/websocket?"));
+        assertTrue(url.contains("__TOKEN__=key"));
+        assertTrue(url.contains("connection-role=collaboration_worker"));
     }
 
     @Test
@@ -55,7 +63,9 @@ class CollaborationPluginTest {
         var method = CollaborationPlugin.class.getDeclaredMethod("buildWebSocketUrl");
         method.setAccessible(true);
         String url = (String) method.invoke(plugin);
-        assertEquals("ws://localhost:8080/api/v1/agents/client/websocket", url);
+        assertTrue(url.startsWith("ws://localhost:8080/api/v1/agents/client/websocket?"));
+        assertTrue(url.contains("client-id="));
+        assertTrue(url.contains("capabilities="));
     }
 
     @Test
@@ -69,5 +79,69 @@ class CollaborationPluginTest {
     void customRole() {
         CollaborationPlugin plugin = new CollaborationPlugin("http://x", "key", "primary_cli");
         assertNotNull(plugin);
+    }
+
+    @Test
+    void rejectedTaskIsNotAcknowledgedAndCanBeRedelivered() throws Exception {
+        AckRecordingPlugin plugin = new AckRecordingPlugin();
+        AtomicBoolean accept = new AtomicBoolean(false);
+        plugin.onTaskDispatch(task -> accept.get());
+        JsonNode payload = mapper.readTree("{\"task_id\":\"task-1\",\"version\":1,\"input_value\":\"work\"}");
+        var method = CollaborationPlugin.class.getDeclaredMethod("handleTaskDispatch", JsonNode.class);
+        method.setAccessible(true);
+        try {
+            method.invoke(plugin, payload);
+            assertTrue(plugin.acknowledgedTaskIds.isEmpty());
+
+            accept.set(true);
+            method.invoke(plugin, payload);
+
+            assertEquals(List.of("task-1"), plugin.acknowledgedTaskIds);
+        } finally {
+            plugin.stop();
+        }
+    }
+
+    @Test
+    void connectionCompletedWhileNotRunningIsAborted() {
+        CollaborationPlugin plugin = new CollaborationPlugin("http://127.0.0.1:1", "key");
+        AtomicBoolean aborted = new AtomicBoolean();
+        WebSocket socket = (WebSocket) Proxy.newProxyInstance(
+                WebSocket.class.getClassLoader(), new Class<?>[]{WebSocket.class},
+                (proxy, method, args) -> {
+                    if ("abort".equals(method.getName())) {
+                        aborted.set(true);
+                    }
+                    return null;
+                });
+
+        plugin.onConnected(socket);
+
+        assertTrue(aborted.get());
+        assertFalse(plugin.isConnected());
+    }
+
+    @Test
+    void lateReadyAfterStopIsIgnored() {
+        CollaborationPlugin plugin = new CollaborationPlugin("http://127.0.0.1:1", "key");
+        plugin.stop();
+
+        plugin.handleMessage("{\"event\":\"connection.ready\",\"payload\":{}}");
+
+        assertFalse(plugin.isConnected());
+        assertFalse(plugin.isRunning());
+    }
+
+    private static final class AckRecordingPlugin extends CollaborationPlugin {
+        private final List<String> acknowledgedTaskIds = new ArrayList<>();
+
+        private AckRecordingPlugin() {
+            super("http://127.0.0.1:1", "key");
+        }
+
+        @Override
+        public void sendTaskAck(String taskId, Long expectedVersion) {
+            acknowledgedTaskIds.add(taskId);
+        }
     }
 }

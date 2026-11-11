@@ -11,7 +11,7 @@ class StreamEventTest {
 
     @Test
     void parseMessageEvent() throws Exception {
-        String json = "{\"event\":\"message\",\"data\":{\"text\":\"Hello\"}}";
+        String json = "{\"event\":\"message\",\"data\":{\"chunk\":\"Hello\"}}";
         StreamEvent event = mapper.readValue(json, StreamEvent.class);
         assertEquals("message", event.getEvent());
         assertTrue(event.isMessage());
@@ -29,9 +29,10 @@ class StreamEventTest {
 
     @Test
     void parseErrorEvent() throws Exception {
-        String json = "{\"event\":\"error\",\"data\":{\"message\":\"something broke\"}}";
+        String json = "{\"event\":\"error\",\"data\":{\"error\":\"something broke\",\"type\":\"test\",\"persisted\":true}}";
         StreamEvent event = mapper.readValue(json, StreamEvent.class);
         assertTrue(event.isError());
+        assertEquals("something broke", event.getErrorMessage());
     }
 
     @Test
@@ -50,17 +51,27 @@ class StreamEventTest {
     }
 
     @Test
-    void messageTextFallbackToContent() throws Exception {
-        String json = "{\"event\":\"message\",\"data\":{\"content\":\"Fallback text\"}}";
+    void legacyTextAndContentAreNotMessageChunks() throws Exception {
+        String json = "{\"event\":\"message\",\"data\":{\"text\":\"old\",\"content\":\"older\"}}";
         StreamEvent event = mapper.readValue(json, StreamEvent.class);
-        assertEquals("Fallback text", event.getMessageText());
+        assertNull(event.getMessageText());
     }
 
     @Test
-    void messageTextNullWhenNoTextOrContent() throws Exception {
+    void messageTextNullWhenNoChunk() throws Exception {
         String json = "{\"event\":\"message\",\"data\":{\"other\":\"value\"}}";
         StreamEvent event = mapper.readValue(json, StreamEvent.class);
         assertNull(event.getMessageText());
+    }
+
+    @Test
+    void identifiesAllProtocolEvents() throws Exception {
+        assertTrue(mapper.readValue("{\"event\":\"bytes\",\"data\":{}}", StreamEvent.class).isBytes());
+        assertTrue(mapper.readValue("{\"event\":\"tool_call\",\"data\":{}}", StreamEvent.class).isToolCall());
+        assertTrue(mapper.readValue("{\"event\":\"file_written\",\"data\":{}}", StreamEvent.class).isFileWritten());
+        assertTrue(mapper.readValue("{\"event\":\"client_tool\",\"data\":{}}", StreamEvent.class).isClientTool());
+        assertTrue(mapper.readValue("{\"event\":\"mcp_tool\",\"data\":{}}", StreamEvent.class).isMcpTool());
+        assertTrue(mapper.readValue("{\"event\":\"built_in\",\"data\":{}}", StreamEvent.class).isBuiltIn());
     }
 
     @Test

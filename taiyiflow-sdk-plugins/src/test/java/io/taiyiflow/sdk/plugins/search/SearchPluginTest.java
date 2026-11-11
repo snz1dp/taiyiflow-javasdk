@@ -19,6 +19,9 @@ class SearchPluginTest {
     @TempDir
     Path tempDir;
 
+    @TempDir
+    Path outside;
+
     private ToolCall makeCall(String jsonArgs) throws Exception {
         return new ToolCall("tc-1", "search", mapper.readTree(jsonArgs));
     }
@@ -73,6 +76,20 @@ class SearchPluginTest {
         ToolResult result = plugin.search(makeCall("{\"pattern\":\"root\",\"path\":\"../../../etc\"}"));
         assertFalse(result.isSuccess());
         assertTrue(result.getError().contains("sandbox"));
+    }
+
+    @Test
+    void symbolicLinkEscapeBlocked() throws Exception {
+        Files.writeString(outside.resolve("secret.txt"), "secret");
+        Files.createSymbolicLink(tempDir.resolve("outside"), outside);
+        SearchPlugin plugin = new SearchPlugin(tempDir);
+
+        ToolResult directoryResult = plugin.search(makeCall("{\"pattern\":\"secret\",\"path\":\"outside\"}"));
+        ToolResult rootResult = plugin.search(makeCall("{\"pattern\":\"secret\"}"));
+
+        assertFalse(directoryResult.isSuccess());
+        assertTrue(rootResult.isSuccess());
+        assertEquals(0, rootResult.getResult().get("totalMatches").asInt());
     }
 
     @Test

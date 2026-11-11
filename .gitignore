@@ -1,5 +1,6 @@
 .snz1dp/cli-instance.*
 target/
+dependency-reduced-pom.xml
 *.class
 *.jar
 *.war

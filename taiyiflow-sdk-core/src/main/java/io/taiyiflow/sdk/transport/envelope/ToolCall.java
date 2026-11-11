@@ -20,6 +20,11 @@ public class ToolCall {
     @JsonProperty("type")
     private String type;
 
+    private String flowId;
+    private String sessionId;
+    private String runId;
+    private String messageId;
+
     public ToolCall() {
     }
 
@@ -59,6 +64,38 @@ public class ToolCall {
 
     public void setType(String type) {
         this.type = type;
+    }
+
+    public String getFlowId() {
+        return flowId;
+    }
+
+    public void setFlowId(String flowId) {
+        this.flowId = flowId;
+    }
+
+    public String getSessionId() {
+        return sessionId;
+    }
+
+    public void setSessionId(String sessionId) {
+        this.sessionId = sessionId;
+    }
+
+    public String getRunId() {
+        return runId;
+    }
+
+    public void setRunId(String runId) {
+        this.runId = runId;
+    }
+
+    public String getMessageId() {
+        return messageId;
+    }
+
+    public void setMessageId(String messageId) {
+        this.messageId = messageId;
     }
 
     @Override

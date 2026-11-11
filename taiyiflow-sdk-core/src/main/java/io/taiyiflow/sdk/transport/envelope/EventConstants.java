@@ -20,6 +20,18 @@ public final class EventConstants {
     /** Stream close event */
     public static final String CLOSE = "close";
 
-    /** Custom event (tool calls, etc.) */
+    /** Custom event */
     public static final String CUSTOM = "custom";
+
+    public static final String BYTES = "bytes";
+
+    public static final String TOOL_CALL = "tool_call";
+
+    public static final String FILE_WRITTEN = "file_written";
+
+    public static final String CLIENT_TOOL = "client_tool";
+
+    public static final String MCP_TOOL = "mcp_tool";
+
+    public static final String BUILT_IN = "built_in";
 }

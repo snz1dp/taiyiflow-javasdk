@@ -59,22 +59,47 @@ public class StreamEvent {
         return EventConstants.CUSTOM.equals(event);
     }
 
-    /**
-     * Extract text content from a message event.
-     */
+    public boolean isBytes() {
+        return EventConstants.BYTES.equals(event);
+    }
+
+    public boolean isToolCall() {
+        return EventConstants.TOOL_CALL.equals(event);
+    }
+
+    public boolean isFileWritten() {
+        return EventConstants.FILE_WRITTEN.equals(event);
+    }
+
+    public boolean isClientTool() {
+        return EventConstants.CLIENT_TOOL.equals(event);
+    }
+
+    public boolean isMcpTool() {
+        return EventConstants.MCP_TOOL.equals(event);
+    }
+
+    public boolean isBuiltIn() {
+        return EventConstants.BUILT_IN.equals(event);
+    }
+
     public String getMessageText() {
         if (data == null) {
             return null;
         }
-        JsonNode text = data.get("text");
-        if (text != null && text.isTextual()) {
-            return text.asText();
+        JsonNode chunk = data.get("chunk");
+        return chunk != null && chunk.isTextual() ? chunk.asText() : null;
+    }
+
+    public String getErrorMessage() {
+        if (data == null) {
+            return null;
         }
-        JsonNode content = data.get("content");
-        if (content != null && content.isTextual()) {
-            return content.asText();
+        JsonNode error = data.get("error");
+        if (error == null || error.isNull()) {
+            return null;
         }
-        return null;
+        return error.isTextual() ? error.asText() : error.toString();
     }
 
     @Override

@@ -14,9 +14,12 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 /**
  * SSE (Server-Sent Events) fallback client for streaming.
@@ -29,15 +32,27 @@ public class SseStreamClient {
     private static final ObjectMapper mapper = new ObjectMapper();
 
     private final String baseUrl;
-    private final String apiKey;
+    private final Supplier<String> accessToken;
     private final String flowId;
+    private final Map<String, String> credentialHeaders;
     private final HttpClient httpClient;
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
+    private final AtomicBoolean closed = new AtomicBoolean(false);
 
     public SseStreamClient(String baseUrl, String apiKey, String flowId) {
+        this(baseUrl, apiKey, flowId, Map.of());
+    }
+
+    public SseStreamClient(String baseUrl, String apiKey, String flowId, Map<String, String> credentialHeaders) {
+        this(baseUrl, () -> apiKey, flowId, credentialHeaders);
+    }
+
+    public SseStreamClient(String baseUrl, Supplier<String> accessToken, String flowId,
+                           Map<String, String> credentialHeaders) {
         this.baseUrl = baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length() - 1) : baseUrl;
-        this.apiKey = apiKey;
+        this.accessToken = accessToken;
         this.flowId = flowId;
+        this.credentialHeaders = Map.copyOf(credentialHeaders);
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(10))
                 .build();
@@ -51,15 +66,27 @@ public class SseStreamClient {
             Consumer<StreamEvent> onEvent,
             Consumer<String> onClose,
             Consumer<Throwable> onError) {
+        stream(request, onEvent, onClose, onError, ignored -> {
+        });
+    }
+
+    public void stream(
+            ChatRequest request,
+            Consumer<StreamEvent> onEvent,
+            Consumer<String> onClose,
+            Consumer<Throwable> onError,
+            Consumer<String> onSessionId) {
 
         executor.submit(() -> {
             try {
                 String url = baseUrl + "/api/v1/run/" + flowId + "/stream";
-                HttpRequest httpRequest = HttpRequest.newBuilder()
+                HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
                         .uri(URI.create(url))
-                        .header("Authorization", "Bearer " + apiKey)
+                        .header("Authorization", "Bearer " + accessToken.get())
                         .header("Content-Type", "application/json")
-                        .header("Accept", "text/event-stream")
+                        .header("Accept", "text/event-stream");
+                credentialHeaders.forEach(requestBuilder::header);
+                HttpRequest httpRequest = requestBuilder
                         .POST(HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(request)))
                         .build();
 
@@ -67,9 +94,13 @@ public class SseStreamClient {
                         httpRequest, HttpResponse.BodyHandlers.ofInputStream());
 
                 if (response.statusCode() >= 400) {
+                    response.body().close();
                     onError.accept(new RuntimeException("SSE request failed: " + response.statusCode()));
                     return;
                 }
+                response.headers().firstValue("X-TaiyiFlow-Session-id")
+                        .filter(value -> !value.isBlank())
+                        .ifPresent(onSessionId);
 
                 try (BufferedReader reader = new BufferedReader(
                         new InputStreamReader(response.body(), StandardCharsets.UTF_8))) {
@@ -94,10 +125,16 @@ public class SseStreamClient {
                         }
                     }
                 }
-                onClose.accept("Stream ended");
+                if (!closed.get()) {
+                    onClose.accept("Stream ended");
+                }
             } catch (Exception e) {
-                log.error("SSE stream error", e);
-                onError.accept(e);
+                if (!closed.get()) {
+                    log.error("SSE stream error", e);
+                    onError.accept(e);
+                }
+            } finally {
+                executor.shutdown();
             }
         });
     }
@@ -119,6 +156,7 @@ public class SseStreamClient {
     }
 
     public void close() {
-        executor.shutdown();
+        closed.set(true);
+        executor.shutdownNow();
     }
 }

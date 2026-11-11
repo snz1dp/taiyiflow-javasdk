@@ -15,20 +15,22 @@ class CloseCodesTest {
 
     @Test
     void errorCodes() {
+        assertTrue(CloseCodes.isError(CloseCodes.INVALID_PATH));
         assertTrue(CloseCodes.isError(CloseCodes.AUTH_FAILED));
-        assertTrue(CloseCodes.isError(CloseCodes.FLOW_NOT_FOUND));
-        assertTrue(CloseCodes.isError(CloseCodes.INVALID_REQUEST));
-        assertTrue(CloseCodes.isError(CloseCodes.RATE_LIMITED));
-        assertTrue(CloseCodes.isError(CloseCodes.INTERNAL_ERROR));
+        assertTrue(CloseCodes.isError(CloseCodes.INVALID_FIRST_FRAME));
+        assertTrue(CloseCodes.isError(CloseCodes.PERMISSION_DENIED));
+        assertTrue(CloseCodes.isError(CloseCodes.FLOW_UNAVAILABLE));
+        assertTrue(CloseCodes.isError(CloseCodes.SESSION_CONFLICT));
     }
 
     @Test
     void describeAllCodes() {
+        assertEquals("Invalid WebSocket endpoint path", CloseCodes.describe(4000));
         assertEquals("Authentication failed", CloseCodes.describe(4001));
-        assertEquals("Flow not found", CloseCodes.describe(4002));
-        assertEquals("Invalid request", CloseCodes.describe(4003));
-        assertEquals("Rate limited", CloseCodes.describe(4004));
-        assertEquals("Internal server error", CloseCodes.describe(4009));
+        assertEquals("First frame timeout or invalid request", CloseCodes.describe(4002));
+        assertEquals("Permission, quota, or model key denied", CloseCodes.describe(4003));
+        assertEquals("Flow not found or unavailable", CloseCodes.describe(4004));
+        assertEquals("Session execution conflict", CloseCodes.describe(4009));
     }
 
     @Test

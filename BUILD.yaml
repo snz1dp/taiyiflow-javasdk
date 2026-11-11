@@ -1,0 +1,16 @@
+name: taiyiflow-javasdk-worker
+
+docker:
+  image: snz1.cn/taiyiflow/javasdk-worker
+  file: Dockerfile
+  platform:
+    - linux/amd64
+    - linux/arm64
+
+service:
+  envs:
+    - TZ=Asia/Shanghai
+    - TAIYIFLOW_WORKER_CONFIG=/config/worker.yml
+  volumes:
+    - taiyiflow-worker-state:/var/lib/taiyiflow/worker
+    - taiyiflow-worker-credentials:/var/lib/taiyiflow-credentials

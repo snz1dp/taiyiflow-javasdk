@@ -8,7 +8,11 @@ import io.taiyiflow.sdk.transport.envelope.ToolCall;
 import io.taiyiflow.sdk.transport.envelope.ToolResult;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -37,7 +41,8 @@ class ToolDispatcherTest {
         PluginManager pm = new PluginManager();
         pm.register("shell", call -> ToolResult.success(call.getId(), mapper.createObjectNode()));
 
-        PermissionHook denyHook = (sessionId, toolCall) -> PermissionHook.Decision.DENY;
+        PermissionHook denyHook = (sessionId, toolCall) ->
+                CompletableFuture.completedFuture(PermissionHook.Decision.DENY);
         ToolDispatcher dispatcher = new ToolDispatcher(pm, List.of(), List.of(denyHook));
         ToolResult result = dispatcher.dispatch("s-1", makeCall("shell"));
 
@@ -46,14 +51,63 @@ class ToolDispatcherTest {
     }
 
     @Test
-    void permissionAskTreatedAsDeny() {
+    void permissionAskCanBeDenied() throws Exception {
         PluginManager pm = new PluginManager();
-        PermissionHook askHook = (sessionId, toolCall) -> PermissionHook.Decision.ASK;
-        ToolDispatcher dispatcher = new ToolDispatcher(pm, List.of(), List.of(askHook));
+        PermissionHook askHook = (sessionId, toolCall) ->
+                CompletableFuture.completedFuture(PermissionHook.Decision.ASK);
+        ApprovalBroker approvals = new ApprovalBroker();
+        ToolDispatcher dispatcher = new ToolDispatcher(
+                pm, List.of(), List.of(askHook), Duration.ofSeconds(1), approvals);
+
+        CompletableFuture<ToolResult> pending = CompletableFuture.supplyAsync(
+                () -> dispatcher.dispatch("s-1", makeCall("write_file")));
+        awaitDecision(approvals, false);
+
+        ToolResult result = pending.get(2, TimeUnit.SECONDS);
+        assertFalse(result.isSuccess());
+        assertEquals("not allowed", result.getError());
+        assertFalse(approvals.deny("tc-1", "duplicate"));
+    }
+
+    @Test
+    void permissionAskCanBeApprovedWithoutTimeout() throws Exception {
+        PluginManager pm = new PluginManager();
+        pm.register("write_file", call -> ToolResult.success(
+                call.getId(), mapper.createObjectNode().put("written", true)));
+        PermissionHook askHook = (sessionId, toolCall) ->
+                CompletableFuture.completedFuture(PermissionHook.Decision.ASK);
+        ApprovalBroker approvals = new ApprovalBroker();
+        ToolDispatcher dispatcher = new ToolDispatcher(
+                pm, List.of(), List.of(askHook), Duration.ZERO, approvals);
+
+        CompletableFuture<ToolResult> pending = CompletableFuture.supplyAsync(
+                () -> dispatcher.dispatch("s-1", makeCall("write_file")));
+        awaitDecision(approvals, true);
+
+        ToolResult result = pending.get(2, TimeUnit.SECONDS);
+        assertTrue(result.isSuccess());
+        assertTrue(result.getResult().required("written").asBoolean());
+        assertFalse(approvals.approve("tc-1"));
+    }
+
+    @Test
+    void permissionAskTimesOutWithoutExecutingPlugin() {
+        AtomicInteger executions = new AtomicInteger();
+        PluginManager pm = new PluginManager();
+        pm.register("write_file", call -> {
+            executions.incrementAndGet();
+            return ToolResult.success(call.getId(), mapper.createObjectNode());
+        });
+        PermissionHook askHook = (sessionId, toolCall) ->
+                CompletableFuture.completedFuture(PermissionHook.Decision.ASK);
+        ToolDispatcher dispatcher = new ToolDispatcher(
+                pm, List.of(), List.of(askHook), Duration.ofMillis(20));
+
         ToolResult result = dispatcher.dispatch("s-1", makeCall("write_file"));
 
         assertFalse(result.isSuccess());
-        assertTrue(result.getError().contains("manual approval"));
+        assertEquals("Permission check timed out", result.getError());
+        assertEquals(0, executions.get());
     }
 
     @Test
@@ -133,6 +187,44 @@ class ToolDispatcherTest {
     }
 
     @Test
+    void delayedPermissionAllowExecutesPlugin() {
+        AtomicInteger executions = new AtomicInteger();
+        PluginManager pm = new PluginManager();
+        pm.register("tool", call -> {
+            executions.incrementAndGet();
+            return ToolResult.success(call.getId(), mapper.createObjectNode());
+        });
+        PermissionHook delayedAllow = (sessionId, toolCall) -> CompletableFuture.supplyAsync(
+                () -> PermissionHook.Decision.ALLOW,
+                CompletableFuture.delayedExecutor(20, TimeUnit.MILLISECONDS));
+        ToolDispatcher dispatcher = new ToolDispatcher(pm, List.of(), List.of(delayedAllow));
+
+        ToolResult result = dispatcher.dispatch("s-1", makeCall("tool"));
+
+        assertTrue(result.isSuccess());
+        assertEquals(1, executions.get());
+    }
+
+    @Test
+    void incompletePermissionTimesOutWithoutExecutingPlugin() {
+        AtomicInteger executions = new AtomicInteger();
+        PluginManager pm = new PluginManager();
+        pm.register("tool", call -> {
+            executions.incrementAndGet();
+            return ToolResult.success(call.getId(), mapper.createObjectNode());
+        });
+        PermissionHook pending = (sessionId, toolCall) -> new CompletableFuture<>();
+        ToolDispatcher dispatcher = new ToolDispatcher(
+                pm, List.of(), List.of(pending), Duration.ofMillis(20));
+
+        ToolResult result = dispatcher.dispatch("s-1", makeCall("tool"));
+
+        assertFalse(result.isSuccess());
+        assertEquals("Permission check timed out", result.getError());
+        assertEquals(0, executions.get());
+    }
+
+    @Test
     void unknownToolReturnsError() {
         PluginManager pm = new PluginManager();
         ToolDispatcher dispatcher = new ToolDispatcher(pm, List.of(), List.of());
@@ -154,7 +246,7 @@ class ToolDispatcherTest {
 
         PermissionHook permission = (sessionId, toolCall) -> {
             order.append("permission;");
-            return PermissionHook.Decision.ALLOW;
+            return CompletableFuture.completedFuture(PermissionHook.Decision.ALLOW);
         };
 
         ToolExecutionHook hook = new ToolExecutionHook() {
@@ -181,5 +273,17 @@ class ToolDispatcherTest {
         dispatcher.dispatch("s-1", makeCall("tool"));
 
         assertEquals("permission;before;takeover(null);execute;after;", order.toString());
+    }
+
+    private static void awaitDecision(ApprovalBroker approvals, boolean approve) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+        while (System.nanoTime() < deadline) {
+            boolean completed = approve ? approvals.approve("tc-1") : approvals.deny("tc-1", "not allowed");
+            if (completed) {
+                return;
+            }
+            Thread.sleep(5);
+        }
+        fail("Approval was not registered");
     }
 }

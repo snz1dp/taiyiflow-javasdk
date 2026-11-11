@@ -1,5 +1,6 @@
 package io.taiyiflow.sdk.starter;
 
+import io.taiyiflow.sdk.RecoveryPolicy;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 import java.time.Duration;
@@ -41,13 +42,29 @@ public class TaiyiFlowProperties {
      */
     private int maxSessions = 100;
 
+    private int eventQueueCapacity = 1024;
+
+    private boolean sseFallbackEnabled = true;
+
+    private RecoveryPolicy recoveryPolicy = RecoveryPolicy.MANUAL;
+
+    private Duration recoveryMinBackoff = Duration.ofSeconds(2);
+
+    private Duration recoveryMaxBackoff = Duration.ofSeconds(60);
+
+    private int recoveryMaxAttempts = 8;
+
+    private boolean autoRestartOnExecutionLoss = true;
+
+    private Duration permissionTimeout = Duration.ofSeconds(300);
+
     /**
      * Enable collaboration plugin.
      */
     private boolean collaborationEnabled = false;
 
     /**
-     * Sandbox root directory for file/shell plugins.
+     * Sandbox root for file/search plugins and working directory for the shell plugin.
      */
     private String sandboxRoot = "/tmp/taiyiflow-sandbox";
 
@@ -87,6 +104,22 @@ public class TaiyiFlowProperties {
     public void setRequestTimeout(Duration requestTimeout) { this.requestTimeout = requestTimeout; }
     public int getMaxSessions() { return maxSessions; }
     public void setMaxSessions(int maxSessions) { this.maxSessions = maxSessions; }
+    public int getEventQueueCapacity() { return eventQueueCapacity; }
+    public void setEventQueueCapacity(int eventQueueCapacity) { this.eventQueueCapacity = eventQueueCapacity; }
+    public boolean isSseFallbackEnabled() { return sseFallbackEnabled; }
+    public void setSseFallbackEnabled(boolean sseFallbackEnabled) { this.sseFallbackEnabled = sseFallbackEnabled; }
+    public RecoveryPolicy getRecoveryPolicy() { return recoveryPolicy; }
+    public void setRecoveryPolicy(RecoveryPolicy recoveryPolicy) { this.recoveryPolicy = recoveryPolicy; }
+    public Duration getRecoveryMinBackoff() { return recoveryMinBackoff; }
+    public void setRecoveryMinBackoff(Duration recoveryMinBackoff) { this.recoveryMinBackoff = recoveryMinBackoff; }
+    public Duration getRecoveryMaxBackoff() { return recoveryMaxBackoff; }
+    public void setRecoveryMaxBackoff(Duration recoveryMaxBackoff) { this.recoveryMaxBackoff = recoveryMaxBackoff; }
+    public int getRecoveryMaxAttempts() { return recoveryMaxAttempts; }
+    public void setRecoveryMaxAttempts(int recoveryMaxAttempts) { this.recoveryMaxAttempts = recoveryMaxAttempts; }
+    public boolean isAutoRestartOnExecutionLoss() { return autoRestartOnExecutionLoss; }
+    public void setAutoRestartOnExecutionLoss(boolean autoRestartOnExecutionLoss) { this.autoRestartOnExecutionLoss = autoRestartOnExecutionLoss; }
+    public Duration getPermissionTimeout() { return permissionTimeout; }
+    public void setPermissionTimeout(Duration permissionTimeout) { this.permissionTimeout = permissionTimeout; }
     public boolean isCollaborationEnabled() { return collaborationEnabled; }
     public void setCollaborationEnabled(boolean collaborationEnabled) { this.collaborationEnabled = collaborationEnabled; }
     public String getSandboxRoot() { return sandboxRoot; }

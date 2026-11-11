@@ -8,7 +8,11 @@ import io.taiyiflow.sdk.transport.envelope.ToolResult;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * Dispatches tool calls through the Hook chain:
@@ -24,13 +28,32 @@ public class ToolDispatcher {
     private final PluginManager pluginManager;
     private final List<ToolExecutionHook> toolHooks;
     private final List<PermissionHook> permissionHooks;
+    private final Duration permissionTimeout;
+    private final ApprovalBroker approvalBroker;
 
     public ToolDispatcher(PluginManager pluginManager,
                           List<ToolExecutionHook> toolHooks,
                           List<PermissionHook> permissionHooks) {
+        this(pluginManager, toolHooks, permissionHooks, Duration.ofSeconds(300));
+    }
+
+    public ToolDispatcher(PluginManager pluginManager,
+                          List<ToolExecutionHook> toolHooks,
+                          List<PermissionHook> permissionHooks,
+                          Duration permissionTimeout) {
+        this(pluginManager, toolHooks, permissionHooks, permissionTimeout, new ApprovalBroker());
+    }
+
+    public ToolDispatcher(PluginManager pluginManager,
+                          List<ToolExecutionHook> toolHooks,
+                          List<PermissionHook> permissionHooks,
+                          Duration permissionTimeout,
+                          ApprovalBroker approvalBroker) {
         this.pluginManager = pluginManager;
         this.toolHooks = toolHooks;
         this.permissionHooks = permissionHooks;
+        this.permissionTimeout = permissionTimeout;
+        this.approvalBroker = approvalBroker;
     }
 
     /**
@@ -46,16 +69,24 @@ public class ToolDispatcher {
         // 1. Permission check
         for (PermissionHook hook : permissionHooks) {
             try {
-                PermissionHook.Decision decision = hook.onPermission(sessionId, toolCall);
+                PermissionHook.Decision decision = await(hook.onPermission(sessionId, toolCall));
+                if (decision == PermissionHook.Decision.ASK) {
+                    ApprovalBroker.Approval approval = approvalBroker.await(toolCall, permissionTimeout);
+                    decision = approval.decision();
+                    if (decision == PermissionHook.Decision.DENY) {
+                        log.info("Tool call denied by user: {}", toolCall.getName());
+                        return ToolResult.error(toolCall.getId(), approval.reason());
+                    }
+                }
                 if (decision == PermissionHook.Decision.DENY) {
                     log.info("Tool call denied by permission hook: {}", toolCall.getName());
                     return ToolResult.error(toolCall.getId(), "Permission denied by hook");
                 }
-                // ASK is treated as DENY in automated context
-                if (decision == PermissionHook.Decision.ASK) {
-                    log.info("Tool call requires approval (treated as deny): {}", toolCall.getName());
-                    return ToolResult.error(toolCall.getId(), "Permission requires manual approval");
-                }
+            } catch (TimeoutException e) {
+                return ToolResult.error(toolCall.getId(), "Permission check timed out");
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return ToolResult.error(toolCall.getId(), "Permission check interrupted");
             } catch (Exception e) {
                 log.error("PermissionHook failed", e);
                 return ToolResult.error(toolCall.getId(), "Permission check failed: " + e.getMessage());
@@ -110,5 +141,13 @@ public class ToolDispatcher {
         }
 
         return result;
+    }
+
+    private PermissionHook.Decision await(CompletableFuture<PermissionHook.Decision> future)
+            throws InterruptedException, java.util.concurrent.ExecutionException, TimeoutException {
+        if (permissionTimeout.isZero()) {
+            return future.get();
+        }
+        return future.get(permissionTimeout.toNanos(), TimeUnit.NANOSECONDS);
     }
 }

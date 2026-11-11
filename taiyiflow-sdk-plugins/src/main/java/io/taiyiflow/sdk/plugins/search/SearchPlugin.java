@@ -10,6 +10,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
@@ -26,7 +27,7 @@ public class SearchPlugin {
     private final Path sandboxRoot;
 
     public SearchPlugin(Path sandboxRoot) {
-        this.sandboxRoot = sandboxRoot;
+        this.sandboxRoot = sandboxRoot.toAbsolutePath().normalize();
     }
 
     public ToolResult search(ToolCall toolCall) {
@@ -40,8 +41,13 @@ public class SearchPlugin {
         String pathStr = args.has("path") ? args.get("path").asText() : ".";
 
         try {
-            Path searchRoot = sandboxRoot.resolve(pathStr).normalize();
-            if (!searchRoot.startsWith(sandboxRoot)) {
+            Path sandboxRealRoot = sandboxRoot.toRealPath();
+            Path requestedRoot = sandboxRoot.resolve(pathStr).normalize();
+            if (!requestedRoot.startsWith(sandboxRoot)) {
+                return ToolResult.error(toolCall.getId(), "Path escapes sandbox");
+            }
+            Path searchRoot = requestedRoot.toRealPath();
+            if (!searchRoot.startsWith(sandboxRealRoot)) {
                 return ToolResult.error(toolCall.getId(), "Path escapes sandbox");
             }
 
@@ -51,7 +57,7 @@ public class SearchPlugin {
             int[] count = {0};
 
             try (Stream<Path> paths = Files.walk(searchRoot)) {
-                paths.filter(Files::isRegularFile).forEach(file -> {
+                paths.filter(file -> Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)).forEach(file -> {
                     if (count[0] >= MAX_RESULTS) return;
                     try {
                         String content = Files.readString(file);
@@ -59,7 +65,7 @@ public class SearchPlugin {
                         for (int i = 0; i < lines.length && count[0] < MAX_RESULTS; i++) {
                             if (compiled.matcher(lines[i]).find()) {
                                 ObjectNode match = matches.addObject();
-                                match.put("file", sandboxRoot.relativize(file).toString());
+                                match.put("file", sandboxRealRoot.relativize(file).toString());
                                 match.put("line", i + 1);
                                 match.put("content", lines[i].strip());
                                 count[0]++;

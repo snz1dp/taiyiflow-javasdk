@@ -1,7 +1,12 @@
 package io.taiyiflow.sdk.examples;
 
 import io.taiyiflow.sdk.collaboration.CollaborationPlugin;
-import io.taiyiflow.sdk.collaboration.SchedulePlugin;
+import io.taiyiflow.sdk.worker.PlatformTaskReporter;
+import io.taiyiflow.sdk.worker.TaskExecutor;
+import io.taiyiflow.sdk.worker.auth.WorkerAuth;
+
+import java.time.Duration;
+import java.util.Map;
 
 /**
  * Example: Collaboration mode - passively receive tasks from the platform.
@@ -13,24 +18,15 @@ public class CollaborationExample {
         String baseUrl = System.getenv("TAIYIFLOW_BASE_URL");
         String apiKey = System.getenv("TAIYIFLOW_API_KEY");
 
-        // Create collaboration plugin
+        WorkerAuth auth = WorkerAuth.apiKey(apiKey);
+        TaskExecutor executor = new TaskExecutor(
+                (task, progress) -> Map.of("summary", "Processed: " + task.inputValue),
+                new PlatformTaskReporter(baseUrl, auth, Duration.ofSeconds(30), Map.of()));
         CollaborationPlugin collaboration = new CollaborationPlugin(baseUrl, apiKey, "collaboration_worker");
 
-        // Handle incoming tasks
         collaboration.onTask(task -> {
             System.out.println("[Task Received] id=" + task.taskId + ", input=" + task.inputValue);
-
-            try {
-                // Simulate task processing
-                collaboration.sendTaskStatus(task.taskId, "processing");
-                Thread.sleep(2000);
-
-                String result = "Processed: " + task.inputValue;
-                collaboration.sendTaskResult(task.taskId, result);
-                System.out.println("[Task Completed] id=" + task.taskId);
-            } catch (Exception e) {
-                collaboration.sendTaskError(task.taskId, e.getMessage());
-            }
+            System.out.println("[Task Finished] id=" + task.taskId + ", state=" + executor.execute(task));
         });
 
         // Handle release pushes
@@ -41,12 +37,6 @@ public class CollaborationExample {
         // Start listening
         collaboration.start();
         System.out.println("Collaboration agent started. Waiting for tasks... (Ctrl+C to stop)");
-
-        // Schedule plugin example
-        SchedulePlugin scheduler = new SchedulePlugin(collaboration);
-        scheduler.schedule("health-check", () -> {
-            System.out.println("[Scheduled] Health check running...");
-        }, 0, 60_000); // Every 60 seconds
 
         // Keep running
         Thread.currentThread().join();

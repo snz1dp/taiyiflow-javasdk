@@ -1,20 +1,35 @@
 package io.taiyiflow.sdk;
 
+import io.taiyiflow.sdk.collaboration.CollaborationPlugin;
 import io.taiyiflow.sdk.core.plugin.PluginManager;
+import io.taiyiflow.sdk.core.session.ClientIdentity;
 import io.taiyiflow.sdk.core.session.SessionManager;
 import io.taiyiflow.sdk.hooks.PermissionHook;
+import io.taiyiflow.sdk.hooks.PermissionPolicy;
 import io.taiyiflow.sdk.hooks.SessionHook;
 import io.taiyiflow.sdk.hooks.StreamHook;
 import io.taiyiflow.sdk.hooks.ToolExecutionHook;
+import io.taiyiflow.sdk.transport.rest.CollaborationTaskClient;
+import io.taiyiflow.sdk.transport.rest.ConfigClient;
+import io.taiyiflow.sdk.transport.rest.ExecutionController;
+import io.taiyiflow.sdk.transport.rest.FileClient;
+import io.taiyiflow.sdk.transport.rest.McpClient;
+import io.taiyiflow.sdk.transport.rest.MemoryClient;
 import io.taiyiflow.sdk.transport.rest.RestClient;
+import io.taiyiflow.sdk.transport.rest.ScheduleClient;
+import io.taiyiflow.sdk.transport.rest.SessionClient;
+import io.taiyiflow.sdk.transport.rest.SkillClient;
+import io.taiyiflow.sdk.transport.stream.StreamProtocolResolver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.function.Supplier;
 
 /**
  * Main entry point for the TaiyiFlow Java SDK.
@@ -41,11 +56,15 @@ public class TaiyiAgent {
     private static final Logger log = LoggerFactory.getLogger(TaiyiAgent.class);
 
     private final String baseUrl;
-    private final String apiKey;
+    private final Supplier<String> accessToken;
     private final String flowId;
+    private final String clientId;
+    private final String deviceId;
     private final SessionManager sessionManager;
     private final PluginManager pluginManager;
     private final RestClient restClient;
+    private final ExecutionController executionController;
+    private final StreamProtocolResolver streamProtocolResolver;
     private final List<StreamHook> globalStreamHooks;
     private final List<ToolExecutionHook> globalToolHooks;
     private final List<PermissionHook> globalPermissionHooks;
@@ -53,13 +72,40 @@ public class TaiyiAgent {
     private final ExecutorService executor;
     private final Duration connectTimeout;
     private final Duration requestTimeout;
+    private final Map<String, String> credentialHeaders;
+    private final PermissionPolicy permissionPolicy;
+    private final PermissionHook permissionHook;
+    private final Duration permissionTimeout;
+    private final int eventQueueCapacity;
+    private final boolean sseFallbackEnabled;
+    private final FlowAdapter flowAdapter;
+    private final RecoveryPolicy recoveryPolicy;
+    private final Duration recoveryMinBackoff;
+    private final Duration recoveryMaxBackoff;
+    private final int recoveryMaxAttempts;
+    private final boolean autoRestartOnExecutionLoss;
+    private final CollaborationPlugin collaborationPlugin;
 
     private TaiyiAgent(Builder builder) {
         this.baseUrl = builder.baseUrl;
-        this.apiKey = builder.apiKey;
+        this.accessToken = builder.accessToken;
         this.flowId = builder.flowId;
+        this.clientId = builder.clientId != null ? builder.clientId : ClientIdentity.loadOrCreate();
+        this.deviceId = builder.deviceId != null ? builder.deviceId : builder.collaborationDeviceId;
         this.connectTimeout = builder.connectTimeout;
         this.requestTimeout = builder.requestTimeout;
+        this.credentialHeaders = Map.copyOf(builder.credentialHeaders);
+        this.permissionPolicy = builder.permissionPolicy;
+        this.permissionHook = builder.permissionHook;
+        this.permissionTimeout = builder.permissionTimeout;
+        this.eventQueueCapacity = builder.eventQueueCapacity;
+        this.sseFallbackEnabled = builder.sseFallbackEnabled;
+        this.flowAdapter = builder.flowAdapter;
+        this.recoveryPolicy = builder.recoveryPolicy;
+        this.recoveryMinBackoff = builder.recoveryMinBackoff;
+        this.recoveryMaxBackoff = builder.recoveryMaxBackoff;
+        this.recoveryMaxAttempts = builder.recoveryMaxAttempts;
+        this.autoRestartOnExecutionLoss = builder.autoRestartOnExecutionLoss;
         this.globalStreamHooks = new ArrayList<>(builder.streamHooks);
         this.globalToolHooks = new ArrayList<>(builder.toolHooks);
         this.globalPermissionHooks = new ArrayList<>(builder.permissionHooks);
@@ -67,11 +113,22 @@ public class TaiyiAgent {
         this.executor = Executors.newVirtualThreadPerTaskExecutor();
         this.sessionManager = new SessionManager(executor, builder.maxSessions);
         this.pluginManager = new PluginManager();
-        this.restClient = new RestClient(baseUrl, apiKey, requestTimeout);
+        this.restClient = new RestClient(baseUrl, accessToken, requestTimeout, credentialHeaders);
+        this.executionController = new ExecutionController(restClient, clientId, deviceId);
+        this.streamProtocolResolver = new StreamProtocolResolver(restClient, builder.streamProtocol);
 
         if (builder.collaborationEnabled) {
-            log.info("Collaboration plugin enabled");
-            // Collaboration plugin initialization will be added in Phase E
+            String collaborationClientId = builder.collaborationClientId != null
+                    ? builder.collaborationClientId : clientId;
+            String collaborationDeviceId = builder.collaborationDeviceId != null
+                    ? builder.collaborationDeviceId : deviceId;
+            collaborationPlugin = new CollaborationPlugin(
+                    baseUrl, accessToken, CollaborationPlugin.ROLE_COLLABORATION_WORKER,
+                    collaborationClientId, collaborationDeviceId,
+                    builder.collaborationInstanceId, credentialHeaders);
+            collaborationPlugin.start();
+        } else {
+            collaborationPlugin = null;
         }
     }
 
@@ -98,6 +155,9 @@ public class TaiyiAgent {
      * Gracefully shut down the agent and all sessions.
      */
     public void shutdown() {
+        if (collaborationPlugin != null) {
+            collaborationPlugin.stop();
+        }
         sessionManager.shutdownAll();
         executor.shutdown();
     }
@@ -108,19 +168,79 @@ public class TaiyiAgent {
     }
 
     public String getApiKey() {
-        return apiKey;
+        return accessToken.get();
+    }
+
+    public Supplier<String> getAccessToken() {
+        return accessToken;
     }
 
     public String getFlowId() {
         return flowId;
     }
 
+    public String getClientId() {
+        return clientId;
+    }
+
+    public String getDeviceId() {
+        return deviceId;
+    }
+
     public RestClient getRestClient() {
         return restClient;
     }
 
+    public SessionClient sessions() {
+        return new SessionClient(restClient);
+    }
+
+    public SkillClient skills() {
+        return new SkillClient(restClient);
+    }
+
+    public MemoryClient memories() {
+        return new MemoryClient(restClient);
+    }
+
+    public ScheduleClient schedules() {
+        return new ScheduleClient(restClient);
+    }
+
+    public ConfigClient config() {
+        return new ConfigClient(restClient);
+    }
+
+    public FileClient files() {
+        return new FileClient(restClient);
+    }
+
+    public McpClient mcpServers() {
+        return new McpClient(restClient);
+    }
+
+    public CollaborationTaskClient collaborationTasks() {
+        return new CollaborationTaskClient(restClient);
+    }
+
+    public ExecutionController executionControl() {
+        return executionController;
+    }
+
+    public StreamProtocol resolveStreamProtocol() {
+        return streamProtocolResolver.resolve();
+    }
+
+    public StreamProtocol refreshStreamProtocol() {
+        return streamProtocolResolver.refresh();
+    }
+
     public PluginManager getPluginManager() {
         return pluginManager;
+    }
+
+    public CollaborationPlugin getCollaborationPlugin() {
+        return collaborationPlugin;
     }
 
     public SessionManager getSessionManager() {
@@ -151,17 +271,83 @@ public class TaiyiAgent {
         return requestTimeout;
     }
 
+    public Map<String, String> getCredentialHeaders() {
+        return credentialHeaders;
+    }
+
+    public PermissionPolicy getPermissionPolicy() {
+        return permissionPolicy;
+    }
+
+    public PermissionHook getPermissionHook() {
+        return permissionHook;
+    }
+
+    public Duration getPermissionTimeout() {
+        return permissionTimeout;
+    }
+
+    public int getEventQueueCapacity() {
+        return eventQueueCapacity;
+    }
+
+    public boolean isSseFallbackEnabled() {
+        return sseFallbackEnabled;
+    }
+
+    public FlowAdapter getFlowAdapter() {
+        return flowAdapter;
+    }
+
+    public RecoveryPolicy getRecoveryPolicy() {
+        return recoveryPolicy;
+    }
+
+    public Duration getRecoveryMinBackoff() {
+        return recoveryMinBackoff;
+    }
+
+    public Duration getRecoveryMaxBackoff() {
+        return recoveryMaxBackoff;
+    }
+
+    public int getRecoveryMaxAttempts() {
+        return recoveryMaxAttempts;
+    }
+
+    public boolean isAutoRestartOnExecutionLoss() {
+        return autoRestartOnExecutionLoss;
+    }
+
     /**
      * Builder for TaiyiAgent.
      */
     public static class Builder {
         private String baseUrl;
-        private String apiKey;
+        private Supplier<String> accessToken;
         private String flowId;
+        private String clientId;
+        private String deviceId;
         private Duration connectTimeout = Duration.ofSeconds(10);
         private Duration requestTimeout = Duration.ofSeconds(30);
         private int maxSessions = 100;
+        private int eventQueueCapacity = 1024;
+        private boolean sseFallbackEnabled = true;
+        private FlowAdapter flowAdapter;
         private boolean collaborationEnabled = false;
+        private String collaborationClientId;
+        private String collaborationDeviceId;
+        private String collaborationInstanceId;
+        private Map<String, String> credentialHeaders = Map.of();
+        private StreamProtocol streamProtocol = StreamProtocol.AUTO;
+        private PermissionPolicy permissionPolicy = PermissionPolicy.READONLY;
+        private PermissionHook permissionHook;
+        private Duration permissionTimeout = Duration.ofSeconds(300);
+        private RecoveryPolicy recoveryPolicy = RecoveryPolicy.MANUAL;
+        private Duration recoveryMinBackoff = Duration.ofSeconds(2);
+        private Duration recoveryMaxBackoff = Duration.ofSeconds(60);
+        private int recoveryMaxAttempts = 8;
+        private boolean autoRestartOnExecutionLoss = true;
 
         private final List<StreamHook> streamHooks = new ArrayList<>();
         private final List<ToolExecutionHook> toolHooks = new ArrayList<>();
@@ -174,12 +360,27 @@ public class TaiyiAgent {
         }
 
         public Builder apiKey(String apiKey) {
-            this.apiKey = apiKey;
+            this.accessToken = () -> apiKey;
+            return this;
+        }
+
+        public Builder accessToken(Supplier<String> accessToken) {
+            this.accessToken = java.util.Objects.requireNonNull(accessToken, "accessToken");
             return this;
         }
 
         public Builder flowId(String flowId) {
             this.flowId = flowId;
+            return this;
+        }
+
+        public Builder clientId(String clientId) {
+            this.clientId = clientId;
+            return this;
+        }
+
+        public Builder deviceId(String deviceId) {
+            this.deviceId = deviceId;
             return this;
         }
 
@@ -198,8 +399,99 @@ public class TaiyiAgent {
             return this;
         }
 
+        public Builder eventQueueCapacity(int capacity) {
+            if (capacity <= 0) {
+                throw new IllegalArgumentException("Event queue capacity must be positive");
+            }
+            this.eventQueueCapacity = capacity;
+            return this;
+        }
+
+        public Builder sseFallbackEnabled(boolean enabled) {
+            this.sseFallbackEnabled = enabled;
+            return this;
+        }
+
+        public Builder flowAdapter(FlowAdapter adapter) {
+            this.flowAdapter = adapter;
+            return this;
+        }
+
+        public Builder credentialHeaders(Map<String, String> headers) {
+            this.credentialHeaders = Map.copyOf(headers);
+            return this;
+        }
+
+        public Builder streamProtocol(StreamProtocol protocol) {
+            this.streamProtocol = java.util.Objects.requireNonNull(protocol, "protocol");
+            return this;
+        }
+
+        public Builder permissionPolicy(PermissionPolicy policy) {
+            this.permissionPolicy = java.util.Objects.requireNonNull(policy, "policy");
+            return this;
+        }
+
+        public Builder permissionHook(PermissionHook hook) {
+            this.permissionHook = java.util.Objects.requireNonNull(hook, "hook");
+            return this;
+        }
+
+        public Builder permissionTimeout(Duration timeout) {
+            if (timeout == null || timeout.isNegative()
+                    || (!timeout.isZero() && (timeout.compareTo(Duration.ofSeconds(10)) < 0
+                    || timeout.compareTo(Duration.ofSeconds(6000)) > 0))) {
+                throw new IllegalArgumentException("Permission timeout must be 0 or between 10 and 6000 seconds");
+            }
+            this.permissionTimeout = timeout;
+            return this;
+        }
+
+        public Builder recoveryPolicy(RecoveryPolicy policy) {
+            this.recoveryPolicy = java.util.Objects.requireNonNull(policy, "policy");
+            return this;
+        }
+
+        public Builder recoveryBackoff(Duration min, Duration max) {
+            if (min == null || max == null || min.isZero() || min.isNegative()
+                    || max.isZero() || max.isNegative() || min.compareTo(max) > 0) {
+                throw new IllegalArgumentException("Recovery backoff requires 0 < min <= max");
+            }
+            this.recoveryMinBackoff = min;
+            this.recoveryMaxBackoff = max;
+            return this;
+        }
+
+        public Builder recoveryMaxAttempts(int attempts) {
+            if (attempts <= 0) {
+                throw new IllegalArgumentException("Recovery max attempts must be positive");
+            }
+            this.recoveryMaxAttempts = attempts;
+            return this;
+        }
+
+        public Builder autoRestartOnExecutionLoss(boolean enabled) {
+            this.autoRestartOnExecutionLoss = enabled;
+            return this;
+        }
+
         public Builder enableCollaboration() {
             this.collaborationEnabled = true;
+            return this;
+        }
+
+        public Builder collaborationClientId(String clientId) {
+            this.collaborationClientId = clientId;
+            return this;
+        }
+
+        public Builder collaborationDeviceId(String deviceId) {
+            this.collaborationDeviceId = deviceId;
+            return this;
+        }
+
+        public Builder collaborationInstanceId(String instanceId) {
+            this.collaborationInstanceId = instanceId;
             return this;
         }
 
@@ -239,8 +531,8 @@ public class TaiyiAgent {
             if (baseUrl == null || baseUrl.isBlank()) {
                 throw new IllegalArgumentException("baseUrl is required");
             }
-            if (apiKey == null || apiKey.isBlank()) {
-                throw new IllegalArgumentException("apiKey is required");
+            if (accessToken == null) {
+                throw new IllegalArgumentException("apiKey or accessToken is required");
             }
             if (flowId == null || flowId.isBlank()) {
                 throw new IllegalArgumentException("flowId is required");
