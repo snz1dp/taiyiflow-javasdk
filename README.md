@@ -227,6 +227,33 @@ ToolExecutionHook.after() ◄──────────────┘
 结果回传智能体
 ```
 
+## 后台进程
+
+Shell 工具在原有命令白名单和沙盒校验后支持 `background: true`，返回 SDK 私有 `process_handle`。配套工具为 `process_list`、`process_output`、`process_stop` 和 `process_cleanup`；句柄只属于当前插件实例和会话，不是平台 taskId 或 OS PID。
+
+- `process_output` 分别按 `stdout_offset` / `stderr_offset` 返回增量数据、`next_offset`、`dropped_chars` 和 `offset_reset`；每个流保留 64 KiB 尾部，达到上限仍持续 draining。
+- `process_stop` 只停止注册表内匹配的进程树；`process_cleanup` 只清除已结束记录。跨会话、未知或进程重启后的旧句柄返回 `unknown_or_lost`，不会按旧 PID 执行 kill，也不会重启原命令。
+- 会话取消、agent/worker 停机会清理后台进程；暂停和恢复不会将其终止。进程表仅保存在内存，不写入结果 Outbox，启用工作区扫描时会在进程退出后补扫产物。
+
+## Stdio MCP
+
+除 Streamable HTTP 的 `McpToolClient` 外，SDK 提供 `StdioMcpManager` 托管本地 MCP 子进程。配置可由后端 `command` / `args` / `env` 对象、`stdio://command arg...` 或 base64/percent 编码的 JSON data URI 创建；`stdio://` 与后端一致，仅按 Unicode 空白拆分，不执行 shell，也不解释引号或转义。
+
+```java
+StdioMcpPolicy policy = StdioMcpPolicy.builder(workspace)
+    .allowCommand("python3")
+    .allowEnvironment("MCP_SERVER_TOKEN")
+    .build();
+StdioMcpManager stdio = new StdioMcpManager(policy, Duration.ofSeconds(30));
+StdioMcpServerConfig config = StdioMcpServerConfig.of(
+    "python3", List.of("-u", "server.py"), Map.of("MCP_SERVER_TOKEN", token));
+stdio.registerTools("local", config, agent.getPluginManager());
+```
+
+工具仍以 `c_{server}_{tool}` 注册并经过统一的权限、Hook、并发与取消链。默认不允许任何命令或显式环境变量；进程环境默认仅继承 `HOME`、`LOGNAME`、`PATH`、`SHELL`、`TERM`、`USER`，可用 `inheritedEnvironment(...)` 进一步收敛。`cwd` 必须位于 workspace 内，server 数量、参数、协议帧、输出尾部和进程寿命均有上限。
+
+相同规范化配置并发首次调用只启动一个进程。stdout 仅接受换行分隔的 JSON-RPC，支持跨 chunk 响应和请求 ID 关联；超时、取消、进程异常退出及关闭都会清理 pending 请求。工具取消不会隐式重放 `tools/call`，agent/worker 停机会关闭全部 MCP 子进程。敏感 env 只保存在配置与进程内存中，不写入 state-dir、能力快照或日志。
+
 ## 执行控制、恢复与审批
 
 `pause()` / `cancel()` 调用服务端控制接口；`attach()` 重接仍在执行的原 run，`resume()` 通过服务端检查点恢复。两者都不会主动创建新执行。
@@ -265,11 +292,28 @@ DigitalWorker worker = DigitalWorker.builder()
     .auth(WorkerAuth.apiKey(apiKey))
     .identity(WorkerIdentity.of("worker-1", "后端数字员工"))
     .workspace(Path.of("/var/lib/taiyiflow/worker"))
-    .identityValidator(platformIdentityValidator) // 必须连接平台预登记校验
+    .stateDir(Path.of("/var/lib/taiyiflow/runtime-state")) // 独立瞬态 Outbox 持久目录
+    .identityValidator(thirdPartyIdentityValidator) // 必须连接第三方身份登记与绑定校验
     .approvalHandler(platformApprovalHandler)     // 默认 PLATFORM 通道的适配器
     .build();
 worker.start();
 ```
+
+### 受控子任务
+
+`DigitalWorker` 为默认智能体会话注册 `run_subtask`，支持单 prompt 和 `subtasks` 批量。每个子任务先通过 `POST /api/v1/agents/client/collaborations` 创建平台记录，再按目标投递；`local_default` 本机任务也复用 `TaskExecutor` 的 running 前置确认、取消、终态回报和重启对账，不以本地返回值替代平台状态。当前只支持 `wait_for_completion=true`，不支持 detached 子任务。
+
+子任务 `request_mode` 缺省继承父级，只能保持或降低为 `agent → plan → ask`，非法显式值和提权都会拒绝。发布时冻结 tools、requested skills、MCP server 名称及 reasoning/search/knowledge 配置；快照不包含 MCP env、URL 凭证或访问令牌。接收端按名称通过 SPI 获取当前身份可用的 MCP 配置，并再次过滤 resolver 返回值，配置只在内存中进入子请求：
+
+```java
+DigitalWorker worker = DigitalWorker.builder()
+    // ...baseUrl/auth/identity/workspace/identityValidator 等必填配置
+    .subtaskMcpResolver((flowId, serverNames) ->
+        mcpRegistry.configsFor(flowId, serverNames)) // 返回 ObjectNode：serverName -> 后端 MCP 配置
+    .build();
+```
+
+`ask`/`plan` 模式在 Hook 和 takeover 前拒绝写工具，未列入 `available_tools` 的工具同样直接失败。批量结果按输入索引聚合，单项失败不会抹掉其他结果；任务数量、并行度和等待时间有界。父运行取消或超时先调用平台取消（携带 `request_id` 和 `expected_version`），再补充本机取消；创建响应丢失时先按父 run、幂等键和 child 标识查询平台，不直接重复创建。
 
 也可以直接使用配置化入口。`deploy/worker.yml` 提供完整示例，密钥只配置环境变量名称：
 
@@ -279,9 +323,11 @@ java -cp 'taiyiflow-sdk-worker/target/*-all.jar:build/adapters/*' \
   io.taiyiflow.sdk.worker.DigitalWorkerMain --config deploy/worker.yml
 ```
 
-`extensions.identity-validator` 必须指向业务方实现的平台预登记校验类；任务、审批和指标分别通过 `task-handler`、`approval-handler`、`approval-audit`、`hooks` 注入。`WorkerHook` 提供 ready、任务开始/结束、错误和停止事件，可接日志、指标或追踪系统。配置路径也可通过 `TAIYIFLOW_WORKER_CONFIG` 或 `taiyiflow.worker.config` 指定。
+`extensions.identity-validator` 必须指向业务接入方实现的第三方身份登记与绑定校验类；任务、审批和指标分别通过 `task-handler`、`approval-handler`、`approval-audit`、`hooks` 注入。`WorkerHook` 提供 ready、任务开始/结束、错误和停止事件，可接日志、指标或追踪系统。配置路径也可通过 `TAIYIFLOW_WORKER_CONFIG` 或 `taiyiflow.worker.config` 指定。
 
-workerId、角色和能力必须由平台预先登记，SDK 不自动注册。认证可使用 `WorkerAuth.apiKey(...)`、`WorkerAuth.jwt(...)`，或 `WorkerAuth.persistentToken(...)`；持久令牌只能放入独立加密 `CredentialStore`，不能写入普通 workspace。所有长期流式连接都会读取最新 accessToken，401 换牌按认证代次合并，每个操作最多重试一次。
+workerId、角色和能力必须由第三方身份实现登记并绑定认证主体，智能体 Agent 后台不承担 workerId 登记，SDK 也不自动注册。认证可使用 `WorkerAuth.apiKey(...)`、`WorkerAuth.jwt(...)`，或 `WorkerAuth.persistentToken(...)`；持久令牌只能放入独立加密 `CredentialStore`，不能写入普通 workspace。所有长期流式连接都会读取最新 accessToken，401 换牌按认证代次合并，每个操作最多重试一次。
+
+`state-dir` 与 workspace、凭证目录分离，仅保存有界的工具结果与 checkpoint 瞬态 Outbox，用于重启后的补传；补传不会重新执行工具或任务。未配置时使用内存 Outbox，进程退出后未确认记录会丢失。`outbox.max-entries`、`max-entry-bytes`、`max-total-bytes` 和 `max-retries` 控制容量与重试上限，冲突或损坏记录进入死信/隔离并通过 `WorkerHook.onError("report-outbox", ...)` 告警。
 
 ### 任务可靠性与恢复
 

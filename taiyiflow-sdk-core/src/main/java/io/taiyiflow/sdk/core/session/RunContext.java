@@ -1,6 +1,7 @@
 package io.taiyiflow.sdk.core.session;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import io.taiyiflow.sdk.core.subtask.SubtaskCapabilitySnapshot;
 import io.taiyiflow.sdk.transport.envelope.AgentLoopControlResult;
 import io.taiyiflow.sdk.transport.envelope.ChatRequest;
 import io.taiyiflow.sdk.transport.envelope.ResumableCheckpoint;
@@ -10,6 +11,8 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.LinkedHashSet;
 
 public class RunContext {
 
@@ -22,6 +25,7 @@ public class RunContext {
     private Map<String, JsonNode> lastTweaks = Map.of();
     private List<String> lastInputFiles = List.of();
     private String requestType;
+    private SubtaskCapabilitySnapshot capabilities = SubtaskCapabilitySnapshot.empty();
     private long recoveryGeneration;
     private boolean persisted;
 
@@ -35,6 +39,7 @@ public class RunContext {
         lastTweaks = copyTweaks(request.getTweaks());
         lastInputFiles = request.getInputFiles() == null ? List.of() : List.copyOf(request.getInputFiles());
         requestType = request.getRequestType();
+        capabilities = SubtaskCapabilitySnapshot.fromChatRequest(request);
         persisted = false;
     }
 
@@ -143,6 +148,10 @@ public class RunContext {
 
     public synchronized String getRequestType() {
         return requestType;
+    }
+
+    public synchronized SubtaskCapabilitySnapshot getCapabilities() {
+        return capabilities;
     }
 
     public synchronized long getRecoveryGeneration() {

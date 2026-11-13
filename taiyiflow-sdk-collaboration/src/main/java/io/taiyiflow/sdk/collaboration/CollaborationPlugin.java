@@ -40,6 +40,8 @@ public class CollaborationPlugin {
     private static final ObjectMapper mapper = new ObjectMapper();
     private static final long HEARTBEAT_INTERVAL_MS = 30_000;
     private static final long RECONNECT_DELAY_MS = 5_000;
+    private static final long MAX_RECONNECT_DELAY_MS = 60_000;
+    private static final long INBOUND_SILENCE_TIMEOUT_MS = 90_000;
     private static final String WORKER_CAPABILITIES =
             "notification.v1,task.remote_task.v1,task.dialogue_subtask.v1";
 
@@ -56,16 +58,23 @@ public class CollaborationPlugin {
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicBoolean stopped = new AtomicBoolean(false);
     private final AtomicBoolean connected = new AtomicBoolean(false);
+    private final AtomicBoolean reconnectScheduled = new AtomicBoolean(false);
     private final Map<String, Long> dispatchedTaskVersions = new ConcurrentHashMap<>();
 
     private volatile WebSocket webSocket;
     private volatile Consumer<TaskDispatch> taskHandler;
     private volatile Predicate<TaskDispatch> taskDispatchHandler;
+    private volatile Consumer<TaskCancel> taskCancelHandler;
     private volatile Consumer<JsonNode> taskSnapshotHandler;
     private volatile Consumer<ReleasePush> releaseHandler;
     private volatile Consumer<JsonNode> connectionReadyHandler;
     private volatile Consumer<String> kickedHandler;
     private volatile String sessionId = "";
+    private volatile long lastInboundNanos = System.nanoTime();
+    private volatile long expectedHeartbeatNanos;
+    private volatile int reconnectAttempts;
+    private volatile long heartbeatIntervalMillis = HEARTBEAT_INTERVAL_MS;
+    private volatile long inboundSilenceTimeoutMillis = INBOUND_SILENCE_TIMEOUT_MS;
 
     public CollaborationPlugin(String baseUrl, String apiKey) {
         this(baseUrl, apiKey, ROLE_COLLABORATION_WORKER);
@@ -126,6 +135,11 @@ public class CollaborationPlugin {
         return this;
     }
 
+    public CollaborationPlugin onTaskCancel(Consumer<TaskCancel> handler) {
+        this.taskCancelHandler = handler;
+        return this;
+    }
+
     public CollaborationPlugin onTaskSnapshot(Consumer<JsonNode> handler) {
         this.taskSnapshotHandler = handler;
         return this;
@@ -149,12 +163,29 @@ public class CollaborationPlugin {
         return this;
     }
 
+    public CollaborationPlugin activityTimeouts(Duration heartbeatInterval, Duration inboundSilenceTimeout) {
+        if (heartbeatInterval == null || inboundSilenceTimeout == null
+                || heartbeatInterval.isZero() || heartbeatInterval.isNegative()
+                || inboundSilenceTimeout.isZero() || inboundSilenceTimeout.isNegative()
+                || inboundSilenceTimeout.compareTo(heartbeatInterval) <= 0) {
+            throw new IllegalArgumentException("Inbound silence timeout must be greater than heartbeat interval");
+        }
+        if (running.get()) {
+            throw new IllegalStateException("Activity timeouts must be configured before start");
+        }
+        this.heartbeatIntervalMillis = heartbeatInterval.toMillis();
+        this.inboundSilenceTimeoutMillis = inboundSilenceTimeout.toMillis();
+        return this;
+    }
+
     public void start() {
         if (!stopped.get() && running.compareAndSet(false, true)) {
             log.info("Starting collaboration plugin with role: {}", role);
+            lastInboundNanos = System.nanoTime();
+            expectedHeartbeatNanos = lastInboundNanos + TimeUnit.MILLISECONDS.toNanos(heartbeatIntervalMillis);
             connect();
             scheduler.scheduleAtFixedRate(this::sendHeartbeat,
-                    HEARTBEAT_INTERVAL_MS, HEARTBEAT_INTERVAL_MS, TimeUnit.MILLISECONDS);
+                    heartbeatIntervalMillis, heartbeatIntervalMillis, TimeUnit.MILLISECONDS);
         }
     }
 
@@ -168,7 +199,7 @@ public class CollaborationPlugin {
             if (current != null) {
                 current.sendClose(WebSocket.NORMAL_CLOSURE, "shutdown");
             }
-            scheduler.shutdown();
+            scheduler.shutdownNow();
             taskExecutor.shutdown();
         }
     }
@@ -189,6 +220,7 @@ public class CollaborationPlugin {
     }
 
     private void connect() {
+        reconnectScheduled.set(false);
         if (!running.get()) {
             return;
         }
@@ -209,7 +241,13 @@ public class CollaborationPlugin {
             ws.abort();
             return;
         }
+        WebSocket previous = this.webSocket;
+        if (previous != null && previous != ws) {
+            ws.abort();
+            return;
+        }
         this.webSocket = ws;
+        lastInboundNanos = System.nanoTime();
         if (!running.get()) {
             if (this.webSocket == ws) {
                 this.webSocket = null;
@@ -222,15 +260,47 @@ public class CollaborationPlugin {
 
     private void scheduleReconnect() {
         connected.set(false);
-        if (running.get()) {
-            scheduler.schedule(this::connect, RECONNECT_DELAY_MS, TimeUnit.MILLISECONDS);
+        if (running.get() && reconnectScheduled.compareAndSet(false, true)) {
+            long delay = reconnectDelayMillis(reconnectAttempts++);
+            try {
+                scheduler.schedule(this::connect, delay, TimeUnit.MILLISECONDS);
+            } catch (java.util.concurrent.RejectedExecutionException ignored) {
+                reconnectScheduled.set(false);
+            }
         }
     }
 
-    private void sendHeartbeat() {
-        if (connected.get()) {
-            sendEnvelope("connection.ping", mapper.createObjectNode());
+    static long reconnectDelayMillis(int attempt) {
+        long ceiling = Math.min(MAX_RECONNECT_DELAY_MS,
+                RECONNECT_DELAY_MS * (1L << Math.min(Math.max(attempt, 0), 4)));
+        long minimum = ceiling / 2;
+        return minimum + java.util.concurrent.ThreadLocalRandom.current().nextLong(ceiling - minimum + 1);
+    }
+
+    void sendHeartbeat() {
+        long now = System.nanoTime();
+        long heartbeatNanos = TimeUnit.MILLISECONDS.toNanos(heartbeatIntervalMillis);
+        if (now - expectedHeartbeatNanos > heartbeatNanos * 2) {
+            lastInboundNanos = now;
+            expectedHeartbeatNanos = now + heartbeatNanos;
+            return;
         }
+        expectedHeartbeatNanos = now + heartbeatNanos;
+        if (!connected.get()) {
+            return;
+        }
+        if (now - lastInboundNanos > TimeUnit.MILLISECONDS.toNanos(inboundSilenceTimeoutMillis)) {
+            log.warn("Collaboration WS inbound silence exceeded {} ms", inboundSilenceTimeoutMillis);
+            connected.set(false);
+            WebSocket current = webSocket;
+            webSocket = null;
+            if (current != null) {
+                current.abort();
+            }
+            scheduleReconnect();
+            return;
+        }
+        sendEnvelope("connection.ping", mapper.createObjectNode());
     }
 
     private void fetchRecentTasks() {
@@ -390,12 +460,19 @@ public class CollaborationPlugin {
                 webSocket.abort();
                 return;
             }
+            WebSocket current = CollaborationPlugin.this.webSocket;
+            if (current != null && current != webSocket) {
+                webSocket.abort();
+                return;
+            }
+            CollaborationPlugin.this.webSocket = webSocket;
+            lastInboundNanos = System.nanoTime();
             webSocket.request(1);
         }
 
         @Override
         public CompletionStage<?> onText(WebSocket webSocket, CharSequence data, boolean last) {
-            if (!running.get()) {
+            if (!running.get() || webSocket != CollaborationPlugin.this.webSocket) {
                 return null;
             }
             textBuffer.append(data);
@@ -411,18 +488,25 @@ public class CollaborationPlugin {
         @Override
         public CompletionStage<?> onClose(WebSocket webSocket, int statusCode, String reason) {
             log.info("Collaboration WS closed: {} {}", statusCode, reason);
-            scheduleReconnect();
+            if (webSocket == CollaborationPlugin.this.webSocket) {
+                CollaborationPlugin.this.webSocket = null;
+                scheduleReconnect();
+            }
             return null;
         }
 
         @Override
         public void onError(WebSocket webSocket, Throwable error) {
             log.error("Collaboration WS error", error);
-            scheduleReconnect();
+            if (webSocket == CollaborationPlugin.this.webSocket) {
+                CollaborationPlugin.this.webSocket = null;
+                scheduleReconnect();
+            }
         }
     }
 
     void handleMessage(String json) {
+        lastInboundNanos = System.nanoTime();
         try {
             JsonNode envelope = mapper.readTree(json);
             String event = envelope.path("event").asText("");
@@ -430,6 +514,7 @@ public class CollaborationPlugin {
             switch (event) {
                 case "connection.ready" -> handleConnectionReady(payload);
                 case "task.dispatch" -> handleTaskDispatch(payload);
+                case "task.cancel" -> handleTaskCancel(payload);
                 case "primary_task.dispatch" -> handlePrimaryTaskDispatch(payload);
                 case "schedule_task.dispatch" -> handleScheduleTaskDispatch(payload);
                 case "tasks.recent" -> handleRecentTasks(payload);
@@ -456,6 +541,8 @@ public class CollaborationPlugin {
             return;
         }
         connected.set(true);
+        reconnectAttempts = 0;
+        lastInboundNanos = System.nanoTime();
         log.info("Collaboration connection ready for client {}", payload.path("client_id").asText(clientId));
         if (!sessionId.isBlank()) {
             sendSessionUpdate(sessionId);
@@ -503,6 +590,24 @@ public class CollaborationPlugin {
         } else {
             dispatchedTaskVersions.put(taskId, previous);
         }
+    }
+
+    private void handleTaskCancel(JsonNode payload) {
+        Consumer<TaskCancel> handler = taskCancelHandler;
+        if (handler == null) {
+            log.warn("No task cancel handler registered, ignoring task cancel");
+            return;
+        }
+        TaskCancel cancel = new TaskCancel();
+        cancel.taskId = text(payload, "task_id");
+        cancel.taskKind = text(payload, "task_kind");
+        cancel.version = payload.path("version").asLong(0);
+        cancel.sourcePrincipalType = text(payload, "source_principal_type");
+        cancel.correlationId = text(payload, "correlation_id");
+        cancel.cancelRequestId = text(payload, "cancel_request_id");
+        cancel.cancelRequestedAt = text(payload, "cancel_requested_at");
+        cancel.payload = payload;
+        handler.accept(cancel);
     }
 
     private void handlePrimaryTaskDispatch(JsonNode payload) {
@@ -554,22 +659,32 @@ public class CollaborationPlugin {
         }
     }
 
-    private TaskDispatch taskFromPayload(JsonNode payload, String taskType) {
-        JsonNode command = payload.path("command");
+    public static TaskDispatch taskFromPayload(JsonNode payload, String taskType) {
+        JsonNode command = payload.path("command_payload").isObject() ? payload.path("command_payload")
+                : payload.path("command").isObject() ? payload.path("command") : payload;
         TaskDispatch task = new TaskDispatch();
         task.taskId = text(payload, "task_id");
+        if (task.taskId.isBlank()) task.taskId = text(payload, "id");
         task.taskKind = text(payload, "task_kind");
         task.taskType = taskType;
         task.version = payload.path("version").asLong(0);
         task.flowId = firstText(command, payload, "flow_id");
         task.inputValue = firstText(command, payload, "input_value");
         if (task.inputValue.isBlank()) {
-            task.inputValue = text(payload, "prompt");
+            task.inputValue = firstText(command, payload, "prompt");
         }
         task.sessionId = firstText(command, payload, "session_id");
+        task.childSessionId = firstText(command, payload, "child_session_id");
+        task.childRunId = firstText(command, payload, "child_run_id");
+        if ("dialogue_subtask".equals(task.taskKind) && !task.childSessionId.isBlank()) {
+            task.sessionId = task.childSessionId;
+        }
+        task.sourceSessionId = text(payload, "source_session_id");
+        task.sourceRunId = text(payload, "source_run_id");
+        task.sourceMessageId = text(payload, "source_message_id");
         task.scheduleId = text(payload, "schedule_id");
         task.runRecordId = text(payload, "run_record_id");
-        task.requestMode = text(payload, "request_mode");
+        task.requestMode = firstText(command, payload, "request_mode");
         task.payload = payload;
         return task;
     }
@@ -651,10 +766,26 @@ public class CollaborationPlugin {
         public String flowId;
         public String inputValue;
         public String sessionId;
+        public String childSessionId;
+        public String childRunId;
+        public String sourceSessionId;
+        public String sourceRunId;
+        public String sourceMessageId;
         public String scheduleId;
         public String runRecordId;
         public String requestMode;
         public String instanceId;
+        public JsonNode payload;
+    }
+
+    public static class TaskCancel {
+        public String taskId;
+        public String taskKind;
+        public long version;
+        public String sourcePrincipalType;
+        public String correlationId;
+        public String cancelRequestId;
+        public String cancelRequestedAt;
         public JsonNode payload;
     }
 

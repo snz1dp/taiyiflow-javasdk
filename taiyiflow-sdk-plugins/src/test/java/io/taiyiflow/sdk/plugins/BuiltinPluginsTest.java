@@ -22,8 +22,13 @@ class BuiltinPluginsTest {
         assertTrue(pm.hasHandler("shell"));
         assertTrue(pm.hasHandler("bash"));
         assertTrue(pm.hasHandler("execute_command"));
+        assertTrue(pm.hasHandler("process_list"));
+        assertTrue(pm.hasHandler("process_output"));
+        assertTrue(pm.hasHandler("process_stop"));
+        assertTrue(pm.hasHandler("process_cleanup"));
         assertTrue(pm.hasHandler("read_file"));
         assertTrue(pm.hasHandler("write_file"));
+        assertTrue(pm.hasHandler("file_edit"));
         assertTrue(pm.hasHandler("list_files"));
         assertTrue(pm.hasHandler("search"));
         assertTrue(pm.hasHandler("grep"));
@@ -36,6 +41,7 @@ class BuiltinPluginsTest {
 
         assertFalse(pm.hasHandler("shell"));
         assertFalse(pm.hasHandler("write_file"));
+        assertFalse(pm.hasHandler("file_edit"));
         assertTrue(pm.hasHandler("read_file"));
         assertTrue(pm.hasHandler("list_files"));
         assertTrue(pm.hasHandler("search"));

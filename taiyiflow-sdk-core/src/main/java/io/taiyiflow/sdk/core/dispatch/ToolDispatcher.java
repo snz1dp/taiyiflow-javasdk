@@ -2,6 +2,7 @@ package io.taiyiflow.sdk.core.dispatch;
 
 import io.taiyiflow.sdk.core.plugin.PluginManager;
 import io.taiyiflow.sdk.hooks.PermissionHook;
+import io.taiyiflow.sdk.hooks.PermissionPolicy;
 import io.taiyiflow.sdk.hooks.ToolExecutionHook;
 import io.taiyiflow.sdk.transport.envelope.ToolCall;
 import io.taiyiflow.sdk.transport.envelope.ToolResult;
@@ -30,6 +31,7 @@ public class ToolDispatcher {
     private final List<PermissionHook> permissionHooks;
     private final Duration permissionTimeout;
     private final ApprovalBroker approvalBroker;
+    private final ToolRuntime toolRuntime;
 
     public ToolDispatcher(PluginManager pluginManager,
                           List<ToolExecutionHook> toolHooks,
@@ -49,24 +51,68 @@ public class ToolDispatcher {
                           List<PermissionHook> permissionHooks,
                           Duration permissionTimeout,
                           ApprovalBroker approvalBroker) {
+        this(pluginManager, toolHooks, permissionHooks, permissionTimeout, approvalBroker, null);
+    }
+
+    public ToolDispatcher(PluginManager pluginManager,
+                          List<ToolExecutionHook> toolHooks,
+                          List<PermissionHook> permissionHooks,
+                          ToolRuntime toolRuntime) {
+        this(pluginManager, toolHooks, permissionHooks, Duration.ofSeconds(300),
+                new ApprovalBroker(), toolRuntime);
+    }
+
+    public ToolDispatcher(PluginManager pluginManager,
+                          List<ToolExecutionHook> toolHooks,
+                          List<PermissionHook> permissionHooks,
+                          Duration permissionTimeout,
+                          ToolRuntime toolRuntime) {
+        this(pluginManager, toolHooks, permissionHooks, permissionTimeout,
+                new ApprovalBroker(), toolRuntime);
+    }
+
+    public ToolDispatcher(PluginManager pluginManager,
+                          List<ToolExecutionHook> toolHooks,
+                          List<PermissionHook> permissionHooks,
+                          Duration permissionTimeout,
+                          ApprovalBroker approvalBroker,
+                          ToolRuntime toolRuntime) {
         this.pluginManager = pluginManager;
         this.toolHooks = toolHooks;
         this.permissionHooks = permissionHooks;
         this.permissionTimeout = permissionTimeout;
         this.approvalBroker = approvalBroker;
+        this.toolRuntime = toolRuntime;
     }
 
     /**
-     * Dispatch a tool call through the Hook chain.
+     * Dispatch a tool call through the Hook chain using the legacy standalone context.
      *
      * @param sessionId the session identifier
      * @param toolCall the tool call to execute
      * @return the tool result
      */
     public ToolResult dispatch(String sessionId, ToolCall toolCall) {
-        log.debug("Dispatching tool call: {} in session {}", toolCall.getName(), sessionId);
+        return dispatch(ToolExecutionContext.standalone(sessionId), toolCall);
+    }
 
-        // 1. Permission check
+    /**
+     * Dispatch with an explicit immutable execution context. Permission checks and before hooks
+     * complete before the shared runtime is asked for an execution permit.
+     */
+    public ToolResult dispatch(ToolExecutionContext context, ToolCall toolCall) {
+        String sessionId = context.getSessionId();
+        log.debug("Dispatching tool call: {} in session {}", toolCall.getName(), sessionId);
+        if (context.getAllowedTools() != null && !context.getAllowedTools().contains(toolCall.getName())) {
+            return ToolResult.error(toolCall.getId(), "Tool is not present in the subtask capability snapshot");
+        }
+        if (("ask".equals(context.getRequestMode()) || "plan".equals(context.getRequestMode()))
+                && PermissionPolicy.isMutating(toolCall.getName())) {
+            return ToolResult.error(toolCall.getId(), "Mutating tools are disabled in " + context.getRequestMode()
+                    + " mode");
+        }
+
+        // 1. Permission check, including ASK approval wait: no execution permit is held here.
         for (PermissionHook hook : permissionHooks) {
             try {
                 PermissionHook.Decision decision = await(hook.onPermission(sessionId, toolCall));
@@ -93,7 +139,7 @@ public class ToolDispatcher {
             }
         }
 
-        // 2. Before hooks (can modify the tool call)
+        // 2. Before hooks (can modify the tool call): also outside the scheduler permit.
         ToolCall currentCall = toolCall;
         for (ToolExecutionHook hook : toolHooks) {
             try {
@@ -108,7 +154,43 @@ public class ToolDispatcher {
             }
         }
 
-        // 3. Execute: try takeover first, then built-in plugin
+        // 3. Only takeover/plugin execution occupies a shared runtime permit.
+        ToolCall executionCall = currentCall;
+        ExecutionOutcome outcome;
+        try {
+            if (toolRuntime == null) {
+                outcome = execute(context, sessionId, executionCall, toolCall.getId());
+            } else {
+                outcome = toolRuntime.execute(context,
+                        () -> execute(context, sessionId, executionCall, toolCall.getId()));
+            }
+        } catch (ToolExecutionException e) {
+            log.warn("Tool execution was not completed for session {}: {}", sessionId, e.getMessage());
+            return ToolResult.error(toolCall.getId(), e.getMessage());
+        }
+
+        ToolResult result = outcome.result;
+        if (!outcome.runAfterHooks) {
+            return result;
+        }
+
+        // 4. After hooks run after permit release and can observe/modify the result.
+        for (ToolExecutionHook hook : toolHooks) {
+            try {
+                ToolResult modified = hook.after(sessionId, executionCall, result);
+                if (modified != null) {
+                    result = modified;
+                }
+            } catch (Exception e) {
+                log.error("ToolExecutionHook.after failed", e);
+            }
+        }
+
+        return result;
+    }
+
+    private ExecutionOutcome execute(ToolExecutionContext context, String sessionId,
+                                     ToolCall currentCall, String originalCallId) {
         ToolResult result = null;
         for (ToolExecutionHook hook : toolHooks) {
             try {
@@ -120,27 +202,26 @@ public class ToolDispatcher {
                 }
             } catch (Exception e) {
                 log.error("ToolExecutionHook.takeover failed", e);
-                return ToolResult.error(toolCall.getId(), "Takeover hook failed: " + e.getMessage());
+                return new ExecutionOutcome(
+                        ToolResult.error(originalCallId, "Takeover hook failed: " + e.getMessage()),
+                        false);
             }
         }
 
         if (result == null) {
-            result = pluginManager.execute(currentCall);
+            result = pluginManager.execute(context, currentCall);
         }
+        return new ExecutionOutcome(result, true);
+    }
 
-        // 4. After hooks (can observe/modify result)
-        for (ToolExecutionHook hook : toolHooks) {
-            try {
-                ToolResult modified = hook.after(sessionId, currentCall, result);
-                if (modified != null) {
-                    result = modified;
-                }
-            } catch (Exception e) {
-                log.error("ToolExecutionHook.after failed", e);
-            }
+    private static final class ExecutionOutcome {
+        private final ToolResult result;
+        private final boolean runAfterHooks;
+
+        private ExecutionOutcome(ToolResult result, boolean runAfterHooks) {
+            this.result = result;
+            this.runAfterHooks = runAfterHooks;
         }
-
-        return result;
     }
 
     private PermissionHook.Decision await(CompletableFuture<PermissionHook.Decision> future)

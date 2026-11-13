@@ -1,5 +1,6 @@
 package io.taiyiflow.sdk;
 
+import io.taiyiflow.sdk.core.dispatch.ToolRuntime;
 import io.taiyiflow.sdk.hooks.PermissionHook;
 import io.taiyiflow.sdk.hooks.PermissionPolicy;
 import io.taiyiflow.sdk.hooks.SessionHook;
@@ -215,6 +216,65 @@ class TaiyiAgentBuilderTest {
         assertTrue(agent.getCollaborationPlugin().isRunning());
         agent.shutdown();
         assertFalse(agent.getCollaborationPlugin().isRunning());
+    }
+
+    @Test
+    void standaloneAgentCreatesConfiguredRuntimeAndClosesIt() {
+        ToolRuntime.Config config = ToolRuntime.Config.builder()
+                .globalConcurrency(3)
+                .perSessionConcurrency(1)
+                .queueCapacity(7)
+                .executionTimeout(Duration.ofSeconds(9))
+                .build();
+        TaiyiAgent agent = TaiyiAgent.builder()
+                .baseUrl("http://x").apiKey("k").flowId("f")
+                .toolRuntimeConfig(config)
+                .build();
+
+        assertSame(config, agent.getToolRuntime().getConfig());
+        assertEquals(3, agent.getToolRuntime().getConfig().getGlobalConcurrency());
+        assertEquals(7, agent.getToolRuntime().getConfig().getQueueCapacity());
+        agent.shutdown();
+        assertTrue(agent.getToolRuntime().isClosed());
+    }
+
+    @Test
+    void injectedRuntimeIsSharedAcrossFlowsAndNotClosedByAgents() {
+        ToolRuntime runtime = new ToolRuntime();
+        TaiyiAgent first = TaiyiAgent.builder()
+                .baseUrl("http://x").apiKey("k").flowId("flow-a")
+                .toolRuntime(runtime)
+                .build();
+        TaiyiAgent second = TaiyiAgent.builder()
+                .baseUrl("http://x").apiKey("k").flowId("flow-b")
+                .toolRuntime(runtime)
+                .build();
+        try {
+            assertSame(runtime, first.getToolRuntime());
+            assertSame(runtime, second.getToolRuntime());
+            first.shutdown();
+            assertFalse(runtime.isClosed());
+            second.shutdown();
+            assertFalse(runtime.isClosed());
+        } finally {
+            first.shutdown();
+            second.shutdown();
+            runtime.close();
+        }
+    }
+
+    @Test
+    void injectedRuntimeAndStandaloneConfigAreMutuallyExclusive() {
+        ToolRuntime runtime = new ToolRuntime();
+        try {
+            TaiyiAgent.Builder builder = TaiyiAgent.builder()
+                    .baseUrl("http://x").apiKey("k").flowId("f")
+                    .toolRuntime(runtime)
+                    .toolRuntimeConfig(ToolRuntime.Config.defaults());
+            assertThrows(IllegalArgumentException.class, builder::build);
+        } finally {
+            runtime.close();
+        }
     }
 
     @Test

@@ -16,6 +16,7 @@ public class DigitalWorkerProperties {
     private String workerId;
     private String displayName;
     private String workspace = "/var/lib/taiyiflow/worker";
+    private String stateDir;
     private WorkerRole role = WorkerRole.COLLABORATION_WORKER;
     private List<String> abilities = List.of();
     private String clientId;
@@ -37,6 +38,8 @@ public class DigitalWorkerProperties {
     public void setDisplayName(String displayName) { this.displayName = displayName; }
     public String getWorkspace() { return workspace; }
     public void setWorkspace(String workspace) { this.workspace = workspace; }
+    public String getStateDir() { return stateDir; }
+    public void setStateDir(String stateDir) { this.stateDir = stateDir; }
     public WorkerRole getRole() { return role; }
     public void setRole(WorkerRole role) { this.role = role; }
     public List<String> getAbilities() { return abilities; }

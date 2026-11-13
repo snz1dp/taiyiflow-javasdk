@@ -9,6 +9,8 @@ import java.net.http.WebSocket;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.time.Duration;
+import java.lang.reflect.Field;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -130,6 +132,102 @@ class CollaborationPluginTest {
 
         assertFalse(plugin.isConnected());
         assertFalse(plugin.isRunning());
+    }
+
+    @Test
+    void inboundSilenceAbortsHalfOpenConnection() throws Exception {
+        CollaborationPlugin plugin = new CollaborationPlugin("http://127.0.0.1:1", "key")
+                .activityTimeouts(Duration.ofMillis(10), Duration.ofMillis(20));
+        AtomicBoolean aborted = new AtomicBoolean();
+        WebSocket socket = socket(aborted);
+        prepareActiveConnection(plugin, socket);
+        setField(plugin, "lastInboundNanos", System.nanoTime() - Duration.ofMillis(100).toNanos());
+        try {
+            plugin.sendHeartbeat();
+
+            assertTrue(aborted.get());
+            assertFalse(plugin.isConnected());
+        } finally {
+            plugin.stop();
+        }
+    }
+
+    @Test
+    void downstreamFrameRefreshesConnectionActivity() throws Exception {
+        CollaborationPlugin plugin = new CollaborationPlugin("http://127.0.0.1:1", "key");
+        long previous = System.nanoTime() - Duration.ofSeconds(1).toNanos();
+        setField(plugin, "lastInboundNanos", previous);
+        try {
+            plugin.handleMessage("{\"event\":\"connection.pong\",\"payload\":{}}");
+
+            assertTrue((long) getField(plugin, "lastInboundNanos") > previous);
+        } finally {
+            plugin.stop();
+        }
+    }
+
+    @Test
+    void delayedSchedulerTickResetsInsteadOfFalsePositive() throws Exception {
+        CollaborationPlugin plugin = new CollaborationPlugin("http://127.0.0.1:1", "key")
+                .activityTimeouts(Duration.ofMillis(10), Duration.ofMillis(20));
+        AtomicBoolean aborted = new AtomicBoolean();
+        prepareActiveConnection(plugin, socket(aborted));
+        setField(plugin, "lastInboundNanos", System.nanoTime() - Duration.ofMillis(100).toNanos());
+        setField(plugin, "expectedHeartbeatNanos", System.nanoTime() - Duration.ofMillis(100).toNanos());
+        try {
+            plugin.sendHeartbeat();
+
+            assertFalse(aborted.get());
+            assertTrue(plugin.isConnected());
+        } finally {
+            plugin.stop();
+        }
+    }
+
+    @Test
+    void reconnectBackoffIsBoundedAndIncludesJitter() {
+        for (int i = 0; i < 20; i++) {
+            long initial = CollaborationPlugin.reconnectDelayMillis(0);
+            long maximum = CollaborationPlugin.reconnectDelayMillis(20);
+            assertTrue(initial >= 2_500 && initial <= 5_000);
+            assertTrue(maximum >= 30_000 && maximum <= 60_000);
+        }
+    }
+
+    private static void prepareActiveConnection(CollaborationPlugin plugin, WebSocket socket) throws Exception {
+        setField(plugin, "running", true);
+        setField(plugin, "connected", true);
+        setField(plugin, "webSocket", socket);
+        setField(plugin, "expectedHeartbeatNanos", System.nanoTime());
+        setField(plugin, "lastInboundNanos", System.nanoTime());
+    }
+
+    private static WebSocket socket(AtomicBoolean aborted) {
+        return (WebSocket) Proxy.newProxyInstance(
+                WebSocket.class.getClassLoader(), new Class<?>[]{WebSocket.class},
+                (proxy, method, args) -> {
+                    if ("abort".equals(method.getName())) {
+                        aborted.set(true);
+                    }
+                    return null;
+                });
+    }
+
+    private static void setField(Object target, String name, Object value) throws Exception {
+        Field field = target.getClass().getDeclaredField(name);
+        field.setAccessible(true);
+        if (field.getType() == AtomicBoolean.class) {
+            ((AtomicBoolean) field.get(target)).set((Boolean) value);
+            return;
+        }
+        field.setAccessible(true);
+        field.set(target, value);
+    }
+
+    private static Object getField(Object target, String name) throws Exception {
+        Field field = target.getClass().getDeclaredField(name);
+        field.setAccessible(true);
+        return field.get(target);
     }
 
     private static final class AckRecordingPlugin extends CollaborationPlugin {

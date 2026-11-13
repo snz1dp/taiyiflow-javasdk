@@ -1,7 +1,10 @@
 package io.taiyiflow.sdk;
 
 import io.taiyiflow.sdk.collaboration.CollaborationPlugin;
+import io.taiyiflow.sdk.core.dispatch.ToolRuntime;
 import io.taiyiflow.sdk.core.plugin.PluginManager;
+import io.taiyiflow.sdk.core.report.ReportOutbox;
+import io.taiyiflow.sdk.core.session.AgentSessionImpl;
 import io.taiyiflow.sdk.core.session.ClientIdentity;
 import io.taiyiflow.sdk.core.session.SessionManager;
 import io.taiyiflow.sdk.hooks.PermissionHook;
@@ -62,6 +65,8 @@ public class TaiyiAgent {
     private final String deviceId;
     private final SessionManager sessionManager;
     private final PluginManager pluginManager;
+    private final ToolRuntime toolRuntime;
+    private final boolean ownsToolRuntime;
     private final RestClient restClient;
     private final ExecutionController executionController;
     private final StreamProtocolResolver streamProtocolResolver;
@@ -113,7 +118,11 @@ public class TaiyiAgent {
         this.executor = Executors.newVirtualThreadPerTaskExecutor();
         this.sessionManager = new SessionManager(executor, builder.maxSessions);
         this.pluginManager = new PluginManager();
-        this.restClient = new RestClient(baseUrl, accessToken, requestTimeout, credentialHeaders);
+        this.ownsToolRuntime = builder.toolRuntime == null;
+        this.toolRuntime = ownsToolRuntime
+                ? new ToolRuntime(builder.toolRuntimeConfig) : builder.toolRuntime;
+        this.restClient = builder.restClient != null ? builder.restClient
+                : new RestClient(baseUrl, accessToken, requestTimeout, credentialHeaders);
         this.executionController = new ExecutionController(restClient, clientId, deviceId);
         this.streamProtocolResolver = new StreamProtocolResolver(restClient, builder.streamProtocol);
 
@@ -159,7 +168,11 @@ public class TaiyiAgent {
             collaborationPlugin.stop();
         }
         sessionManager.shutdownAll();
+        pluginManager.close();
         executor.shutdown();
+        if (ownsToolRuntime) {
+            toolRuntime.close();
+        }
     }
 
     // Getters
@@ -237,6 +250,32 @@ public class TaiyiAgent {
 
     public PluginManager getPluginManager() {
         return pluginManager;
+    }
+
+    /** Shared by sessions and available for a worker that owns cross-flow tool resources. */
+    public ToolRuntime getToolRuntime() {
+        return toolRuntime;
+    }
+
+    /** Resume persisted first-frame submissions for this flow without executing any tools. */
+    public void flushResumeReports() {
+        for (ReportOutbox.Entry entry : toolRuntime.getReportOutbox()
+                .list(ReportOutbox.Type.CHECKPOINT_TOOL_RESULTS)) {
+            if (!flowId.equals(entry.getFlowId()) || !entry.isDue()) {
+                continue;
+            }
+            AgentSessionImpl existing = sessionManager.getSession(entry.getSessionId());
+            if (existing != null) {
+                continue;
+            }
+            try {
+                AgentSessionImpl session = (AgentSessionImpl) newSession(entry.getSessionId());
+                session.recoverReport(entry);
+            } catch (RuntimeException exception) {
+                log.warn("Unable to resume stored report {} for session {}",
+                        entry.getId(), entry.getSessionId());
+            }
+        }
     }
 
     public CollaborationPlugin getCollaborationPlugin() {
@@ -332,6 +371,10 @@ public class TaiyiAgent {
         private Duration requestTimeout = Duration.ofSeconds(30);
         private int maxSessions = 100;
         private int eventQueueCapacity = 1024;
+        private ToolRuntime toolRuntime;
+        private RestClient restClient;
+        private ToolRuntime.Config toolRuntimeConfig = ToolRuntime.Config.defaults();
+        private boolean toolRuntimeConfigSet;
         private boolean sseFallbackEnabled = true;
         private FlowAdapter flowAdapter;
         private boolean collaborationEnabled = false;
@@ -391,6 +434,25 @@ public class TaiyiAgent {
 
         public Builder requestTimeout(Duration timeout) {
             this.requestTimeout = timeout;
+            return this;
+        }
+
+        /** Inject worker-owned runtime resources; the built agent will not close them. */
+        public Builder toolRuntime(ToolRuntime runtime) {
+            this.toolRuntime = java.util.Objects.requireNonNull(runtime, "toolRuntime");
+            return this;
+        }
+
+        /** Advanced transport injection, primarily for worker authentication retry integration. */
+        public Builder restClient(RestClient restClient) {
+            this.restClient = java.util.Objects.requireNonNull(restClient, "restClient");
+            return this;
+        }
+
+        /** Configure the standalone runtime created and closed by the built agent. */
+        public Builder toolRuntimeConfig(ToolRuntime.Config config) {
+            this.toolRuntimeConfig = java.util.Objects.requireNonNull(config, "toolRuntimeConfig");
+            this.toolRuntimeConfigSet = true;
             return this;
         }
 
@@ -536,6 +598,13 @@ public class TaiyiAgent {
             }
             if (flowId == null || flowId.isBlank()) {
                 throw new IllegalArgumentException("flowId is required");
+            }
+            if (toolRuntime != null && toolRuntimeConfigSet) {
+                throw new IllegalArgumentException(
+                        "toolRuntime and toolRuntimeConfig are mutually exclusive");
+            }
+            if (toolRuntime != null && toolRuntime.isClosed()) {
+                throw new IllegalArgumentException("toolRuntime is closed");
             }
             return new TaiyiAgent(this);
         }

@@ -50,6 +50,12 @@ public class ResumableCheckpoint {
     @JsonProperty("uncertain_call_ids")
     private List<String> uncertainCallIds = List.of();
 
+    @JsonProperty("last_submission_id")
+    private String lastSubmissionId;
+
+    @JsonProperty("last_submission_hash")
+    private String lastSubmissionHash;
+
     @JsonProperty("updated_at")
     private String updatedAt;
 
@@ -166,6 +172,22 @@ public class ResumableCheckpoint {
 
     public void setUncertainCallIds(List<String> uncertainCallIds) {
         this.uncertainCallIds = uncertainCallIds == null ? List.of() : List.copyOf(uncertainCallIds);
+    }
+
+    public String getLastSubmissionId() {
+        return lastSubmissionId;
+    }
+
+    public void setLastSubmissionId(String lastSubmissionId) {
+        this.lastSubmissionId = lastSubmissionId;
+    }
+
+    public String getLastSubmissionHash() {
+        return lastSubmissionHash;
+    }
+
+    public void setLastSubmissionHash(String lastSubmissionHash) {
+        this.lastSubmissionHash = lastSubmissionHash;
     }
 
     public String getUpdatedAt() {

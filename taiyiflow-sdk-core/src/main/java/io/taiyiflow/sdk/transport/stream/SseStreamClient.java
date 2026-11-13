@@ -3,6 +3,7 @@ package io.taiyiflow.sdk.transport.stream;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.taiyiflow.sdk.transport.envelope.ChatRequest;
 import io.taiyiflow.sdk.transport.envelope.StreamEvent;
+import io.taiyiflow.sdk.transport.rest.RestClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -93,9 +94,12 @@ public class SseStreamClient {
                 HttpResponse<java.io.InputStream> response = httpClient.send(
                         httpRequest, HttpResponse.BodyHandlers.ofInputStream());
 
-                if (response.statusCode() >= 400) {
-                    response.body().close();
-                    onError.accept(new RuntimeException("SSE request failed: " + response.statusCode()));
+                if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                    String errorBody;
+                    try (java.io.InputStream body = response.body()) {
+                        errorBody = new String(body.readNBytes(64 * 1024), StandardCharsets.UTF_8);
+                    }
+                    onError.accept(new RestClient.RestException(response.statusCode(), errorBody));
                     return;
                 }
                 response.headers().firstValue("X-TaiyiFlow-Session-id")

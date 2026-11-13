@@ -2,53 +2,83 @@ package io.taiyiflow.sdk.transport.rest;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import io.taiyiflow.sdk.core.dispatch.ToolRuntime;
+import io.taiyiflow.sdk.core.report.ClientToolResultAdapter;
+import io.taiyiflow.sdk.core.report.InMemoryReportOutbox;
+import io.taiyiflow.sdk.core.report.ReportAlert;
 import io.taiyiflow.sdk.transport.envelope.ToolCall;
 import io.taiyiflow.sdk.transport.envelope.ToolResult;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
 
 public final class ToolResultReporter {
-
+    private static final Logger log = LoggerFactory.getLogger(ToolResultReporter.class);
     private static final ObjectMapper mapper = new ObjectMapper();
-    private static final String RESULT_PATH = "/api/v1/agents/client/call/result";
 
-    private final RestClient restClient;
-    private final int maxRetries;
-    private final Duration initialRetryDelay;
+    private final ClientToolResultAdapter adapter;
 
+    /** Legacy standalone reporter with an explicitly nonpersistent process-local outbox. */
     public ToolResultReporter(RestClient restClient) {
         this(restClient, 3, Duration.ofMillis(500));
     }
 
     public ToolResultReporter(RestClient restClient, int maxRetries, Duration initialRetryDelay) {
+        this(restClient, new InMemoryReportOutbox(), ToolResultReporter::logSevereAlert,
+                maxRetries, initialRetryDelay);
+    }
+
+    /** Session/worker reporter backed by the shared ToolRuntime outbox. */
+    public ToolResultReporter(RestClient restClient, ToolRuntime runtime) {
+        this(restClient, runtime.getReportOutbox(), runtime::reportFailure, 3, Duration.ofMillis(500));
+    }
+
+    public ToolResultReporter(RestClient restClient, ToolRuntime runtime,
+                              int maxRetries, Duration initialRetryDelay) {
+        this(restClient, runtime.getReportOutbox(), runtime::reportFailure, maxRetries, initialRetryDelay);
+    }
+
+    private ToolResultReporter(RestClient restClient, io.taiyiflow.sdk.core.report.ReportOutbox outbox,
+                               java.util.function.Consumer<ReportAlert> alertHandler,
+                               int maxRetries, Duration initialRetryDelay) {
         if (maxRetries < 0) {
             throw new IllegalArgumentException("maxRetries must be non-negative");
         }
-        this.restClient = restClient;
-        this.maxRetries = maxRetries;
-        this.initialRetryDelay = initialRetryDelay;
+        if (initialRetryDelay == null || initialRetryDelay.isNegative()) {
+            throw new IllegalArgumentException("initialRetryDelay must be non-negative");
+        }
+        this.adapter = new ClientToolResultAdapter(restClient, outbox, alertHandler,
+                maxRetries, initialRetryDelay);
     }
 
+    /** Compatibility API: failures still surface after the per-call retry budget. */
     public void report(ToolCall call, ToolResult result) {
         reportPayload(buildPayload(call, result));
     }
 
     public void reportPayload(ObjectNode payload) {
-        String callId = payload.path("call_id").asText();
-        for (int attempt = 0; ; attempt++) {
-            try {
-                restClient.post(RESULT_PATH, payload);
-                return;
-            } catch (Exception e) {
-                if (e instanceof InterruptedException) {
-                    Thread.currentThread().interrupt();
-                }
-                if (attempt >= maxRetries || Thread.currentThread().isInterrupted()) {
-                    throw new ToolResultReportException(callId, e);
-                }
-                sleep(initialRetryDelay.multipliedBy(1L << attempt));
-            }
+        ClientToolResultAdapter.Result outcome = reportPersisted(payload);
+        if (outcome.outcome() != ClientToolResultAdapter.Outcome.REPORTED) {
+            throw new ToolResultReportException(payload.path("call_id").asText(), outcome.error());
         }
+    }
+
+    /** Session API that distinguishes retained compensation from terminal delivery/dead-letter. */
+    public ClientToolResultAdapter.Result reportPersisted(ObjectNode payload) {
+        return adapter.persistAndReport(payload);
+    }
+
+    public ClientToolResultAdapter.Result reportPersisted(ToolCall call, ToolResult result) {
+        return reportPersisted(buildPayload(call, result));
+    }
+
+    public void flush() {
+        adapter.flush();
+    }
+
+    public void flushNow() {
+        adapter.flushNow();
     }
 
     public static ObjectNode buildPayload(ToolCall call, ToolResult result) {
@@ -76,13 +106,9 @@ public final class ToolResultReporter {
         }
     }
 
-    private static void sleep(Duration delay) {
-        try {
-            Thread.sleep(delay);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new ToolResultReportException("interrupted", e);
-        }
+    private static void logSevereAlert(ReportAlert alert) {
+        log.error("SEVERE tool result report failure: session={}, run={}, call={}",
+                alert.sessionId(), alert.runId(), alert.callId());
     }
 
     public static final class ToolResultReportException extends RuntimeException {

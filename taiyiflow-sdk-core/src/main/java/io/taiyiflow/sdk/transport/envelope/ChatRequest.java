@@ -59,6 +59,24 @@ public class ChatRequest {
     @JsonProperty("request_type")
     private String requestType;
 
+    @JsonProperty("parent_id")
+    private String parentId;
+
+    @JsonProperty("reasoning")
+    private Boolean reasoning;
+
+    @JsonProperty("internet_search")
+    private Boolean internetSearch;
+
+    @JsonProperty("knowledge_scopes")
+    private JsonNode knowledgeScopes;
+
+    @JsonProperty("knowledge_docs")
+    private JsonNode knowledgeDocs;
+
+    @JsonProperty("requested_skill_names")
+    private List<String> requestedSkillNames;
+
     @JsonProperty("available_tools")
     private List<JsonNode> availableTools;
 
@@ -200,6 +218,54 @@ public class ChatRequest {
 
     public void setRequestType(String requestType) {
         this.requestType = requestType;
+    }
+
+    public String getParentId() {
+        return parentId;
+    }
+
+    public void setParentId(String parentId) {
+        this.parentId = parentId;
+    }
+
+    public Boolean getReasoning() {
+        return reasoning;
+    }
+
+    public void setReasoning(Boolean reasoning) {
+        this.reasoning = reasoning;
+    }
+
+    public Boolean getInternetSearch() {
+        return internetSearch;
+    }
+
+    public void setInternetSearch(Boolean internetSearch) {
+        this.internetSearch = internetSearch;
+    }
+
+    public JsonNode getKnowledgeScopes() {
+        return knowledgeScopes;
+    }
+
+    public void setKnowledgeScopes(JsonNode knowledgeScopes) {
+        this.knowledgeScopes = knowledgeScopes;
+    }
+
+    public JsonNode getKnowledgeDocs() {
+        return knowledgeDocs;
+    }
+
+    public void setKnowledgeDocs(JsonNode knowledgeDocs) {
+        this.knowledgeDocs = knowledgeDocs;
+    }
+
+    public List<String> getRequestedSkillNames() {
+        return requestedSkillNames;
+    }
+
+    public void setRequestedSkillNames(List<String> requestedSkillNames) {
+        this.requestedSkillNames = requestedSkillNames;
     }
 
     public List<JsonNode> getAvailableTools() {

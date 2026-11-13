@@ -4,7 +4,7 @@
 
 面向 Java 后台的**数字人（Digital Worker）运行时 SDK**：以 Java 进程实现的智能体作为"数字员工"长期在线——有身份（workerId/角色/能力清单）、可被平台调度接活（协同 WS）、可持续工作（暂停/恢复/重试/重复）、可请示汇报（审批/状态回报）、可自愈（断线恢复/任务补偿）。
 
-同时保留 `TaiyiAgent` 主动调用形态：多会话并行执行、流式消息输出、可观察/可接管的插件化工具执行。一切扩展点收敛为 **Hook 机制**。
+同时保留 `TaiyiAgent` 主动调用形态：多会话并行执行、流式消息输出、可观察/可接管的插件化工具执行。TaiyiAgent 业务扩展使用 **Hook 机制**；DigitalWorker 的 workerId 注册/校验与任务接入使用 **Worker SPI**，由 SDK 使用方实现。
 
 与 JSSDK 的区别：JSSDK 解决"浏览器嵌入聊天窗口"；本 SDK 解决"Java 后台数字人本体"及其主动驱动平台智能体的能力。
 
@@ -32,7 +32,7 @@ taiyiflow-javasdk/
 │   └── src/main/java/io/taiyiflow/sdk/
 │       ├── TaiyiAgent.java        # 门面（Builder 模式），绑定 baseUrl/apiKey/flowId
 │       ├── AgentSession.java      # 会话接口：chat()/interrupt()/await()/onXxx()
-│       ├── hooks/                 # 4 个 Hook SPI（唯一扩展面）
+│       ├── hooks/                 # 4 个 Hook SPI（TaiyiAgent 业务扩展面）
 │       │   ├── StreamHook.java            # onChunk/onEvent/onError/onClose
 │       │   ├── ToolExecutionHook.java     # before/after/takeover（takeover 非空即接管）
 │       │   ├── PermissionHook.java        # ALLOW/DENY/ASK
@@ -55,16 +55,17 @@ taiyiflow-javasdk/
 
 ## 核心设计约束
 
-1. **Hook 是唯一扩展面**：新增定制能力优先挂 Hook，不在门面堆参数。
+1. **扩展面分层**：TaiyiAgent 新增业务定制优先挂 Hook，不在门面堆参数；DigitalWorker 的身份注册/校验和任务接入走 Worker SPI，不硬编码第三方系统。
 2. **零 Hook 开箱即用**：默认配置 + 内置插件即可跑通"发消息→收流式回复"。
 3. **多会话并行**：一个 `TaiyiAgent` 绑定一个 flow，多会话各一条独立连接，会话间隔离、可各自中断。
 4. **协同 WS 是可选插件**：默认不建立被动长连接；仅 `enableCollaboration()` 时启动。
 5. **安全默认**：Shell/File 插件沙盒目录 + 命令白名单；PermissionHook 缺省放行只读、拦截写操作。
-6. **数字人身份平台预登记**：workerId 与认证主体、角色、能力由平台绑定，SDK 不自动注册；认证支持后台 API Key/JWT 与用户 persistentToken + deviceId，后者只用于换发 accessToken。
-7. **仅单实例容器运行**：同一 workerId 只运行一个容器副本，由容器平台心跳检测并快速拉起；SDK 不实现多实例协调或选举代次，重启后以平台任务、检查点和结果对账，状态未知时不得重放副作用操作。
-8. **审批默认走平台**：平台事件上报与人工回执为默认通道，本地异步 Hook 为可选通道；本地决策也须回报平台形成审计记录。
-9. **记忆与结果均在服务端**：全部记忆走 MemoryClient，任务进度、工具结果、产物、运行检查点和审批回执以平台为权威；本地 workspace 只保存最小执行状态和临时工作文件，不保存权威结果或长期任务历史。
-10. **凭证与执行状态隔离**：API Key/JWT/accessToken/persistentToken 不写入普通 workspace；持久令牌仅可放独立加密凭证存储，日志与异常默认脱敏。
+6. **数字人身份由第三方实现登记与校验**：workerId 与认证主体、角色、能力由 SDK 使用方的第三方身份实现绑定和治理，智能体 Agent 后台不承担 workerId 登记；SDK 规划新增 `WorkerRegistrar` 注册 SPI，并保留必填 `WorkerIdentityValidator`，不内置第三方注册逻辑。认证支持后台 API Key/JWT 与用户 persistentToken + deviceId，后者只用于换发 accessToken。
+7. **任务扩展由使用方实现**：`WorkerTaskHandler`、`TaskProgress`、`TaskReporter`、`WorkerHook` 等 Worker SPI 用于任务执行、进度、结果回报和观察扩展；不得绕过 taskId 幂等、并发、取消和平台对账。
+8. **仅单实例容器运行**：同一 workerId 只运行一个容器副本，由容器平台心跳检测并快速拉起；SDK 不实现多实例协调或选举代次，重启后以平台任务、检查点和结果对账，状态未知时不得重放副作用操作。
+9. **审批默认走平台**：平台事件上报与人工回执为默认通道，本地异步 Hook 为可选通道；本地决策也须回报平台形成审计记录。
+10. **记忆与结果均在服务端**：全部记忆走 MemoryClient，任务进度、工具结果、产物、运行检查点和审批回执以平台为权威；本地 workspace 只保存最小执行状态和临时工作文件，不保存权威结果或长期任务历史。
+11. **凭证与执行状态隔离**：API Key/JWT/accessToken/persistentToken 不写入普通 workspace；持久令牌仅可放独立加密凭证存储，日志与异常默认脱敏。
 
 ## 协议对接（重要：以 taiyiflow-dev 后端代码为准，文档可能过时）
 
@@ -86,7 +87,7 @@ taiyiflow-javasdk/
 ## 计划文档
 
 - `.github/prompts/plan-taiyiflowJavaSdk.prompt.md` — 初始规划（Phase A–F 已完成）
-- `.github/prompts/plan-taiyiflowJavaSdk-roadmap.prompt.md` — 后续实施总计划：协议纠偏、执行控制与数字人形态（Phase G–R）
+- `.github/prompts/plan-taiyiflowJavaSdk-roadmap.prompt.md` — 后续实施唯一权威总计划：协议纠偏、执行控制、数字人形态与运行时增强（Phase G–R 已完成，Phase S–Z 待实施）
 
 ## 参考工程
 

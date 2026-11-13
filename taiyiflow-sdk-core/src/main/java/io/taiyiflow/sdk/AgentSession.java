@@ -52,6 +52,9 @@ public interface AgentSession {
     AgentSession chat(String message, java.util.Map<String, com.fasterxml.jackson.databind.JsonNode> tweaks,
                       java.util.List<String> inputFiles);
 
+    /** Start a run from an advanced protocol request, including worker subtask context. */
+    AgentSession chat(io.taiyiflow.sdk.transport.envelope.ChatRequest request);
+
     /**
      * Request a server-side pause for the current run.
      */

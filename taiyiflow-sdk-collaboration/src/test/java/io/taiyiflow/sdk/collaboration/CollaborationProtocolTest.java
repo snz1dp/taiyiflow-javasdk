@@ -122,6 +122,31 @@ class CollaborationProtocolTest {
     }
 
     @Test
+    void taskCancelReadsBackendPayloadWithoutDispatchOrAckSideEffects() {
+        RecordingPlugin plugin = new RecordingPlugin(CollaborationPlugin.ROLE_COLLABORATION_WORKER);
+        AtomicReference<CollaborationPlugin.TaskCancel> received = new AtomicReference<>();
+        plugin.onTask(task -> {
+            throw new AssertionError("Cancellation must not dispatch work");
+        });
+        plugin.onTaskCancel(received::set);
+
+        plugin.handleMessage("""
+                {"type":"collaboration","event":"task.cancel","payload":{"task_id":"task-1","task_kind":"remote_task","version":8,"source_principal_type":"agent","correlation_id":"correlation-1","cancel_request_id":"cancel-1","cancel_requested_at":"2026-01-01T00:00:00+00:00"}}
+                """);
+
+        assertTrue(plugin.sent.isEmpty());
+        CollaborationPlugin.TaskCancel cancel = received.get();
+        assertEquals("task-1", cancel.taskId);
+        assertEquals("remote_task", cancel.taskKind);
+        assertEquals(8, cancel.version);
+        assertEquals("agent", cancel.sourcePrincipalType);
+        assertEquals("correlation-1", cancel.correlationId);
+        assertEquals("cancel-1", cancel.cancelRequestId);
+        assertEquals("2026-01-01T00:00:00+00:00", cancel.cancelRequestedAt);
+        assertEquals("task-1", cancel.payload.get("task_id").asText());
+    }
+
+    @Test
     void recentTasksReplayOnlyPendingWorkThroughTaskHandler() throws Exception {
         RecordingPlugin plugin = new RecordingPlugin(CollaborationPlugin.ROLE_COLLABORATION_WORKER);
         CountDownLatch handled = new CountDownLatch(1);

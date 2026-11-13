@@ -3,6 +3,14 @@ package io.taiyiflow.sdk.worker;
 import io.taiyiflow.sdk.RecoveryPolicy;
 import io.taiyiflow.sdk.TaiyiAgent;
 import io.taiyiflow.sdk.collaboration.CollaborationPlugin;
+import io.taiyiflow.sdk.core.dispatch.ToolRuntime;
+import io.taiyiflow.sdk.core.report.FileReportOutbox;
+import io.taiyiflow.sdk.core.report.InMemoryReportOutbox;
+import io.taiyiflow.sdk.core.report.ReportAlert;
+import io.taiyiflow.sdk.core.report.ReportOutbox;
+import io.taiyiflow.sdk.core.subtask.LocalSubtaskExecutor;
+import io.taiyiflow.sdk.core.subtask.SubtaskOrchestrator;
+import io.taiyiflow.sdk.core.subtask.SubtaskTask;
 import io.taiyiflow.sdk.hooks.PermissionHook;
 import io.taiyiflow.sdk.hooks.PermissionPolicy;
 import io.taiyiflow.sdk.transport.rest.FileClient;
@@ -28,9 +36,12 @@ public final class DigitalWorker {
 
     private final String baseUrl;
     private final WorkerAuth auth;
-    private final WorkerIdentity identity;
+    private volatile WorkerIdentity identity;
+    private final WorkerRegistrar workerRegistrar;
+    private final String displayName;
     private final WorkerRole role;
     private final Set<Ability> abilities;
+    private final ToolRuntime toolRuntime;
     private final Path workspace;
     private final RecoveryPolicy recoveryPolicy;
     private final PermissionPolicy permissionPolicy;
@@ -51,6 +62,7 @@ public final class DigitalWorker {
     private final AtomicBoolean stopped = new AtomicBoolean();
 
     private volatile CollaborationPlugin collaboration;
+    private volatile SubtaskOrchestrator subtaskOrchestrator;
     private volatile CountDownLatch readyLatch;
     private volatile String instanceId;
     private volatile String clientId;
@@ -61,8 +73,14 @@ public final class DigitalWorker {
         this.baseUrl = builder.baseUrl;
         this.auth = builder.auth;
         this.identity = builder.identity;
+        this.workerRegistrar = builder.workerRegistrar;
+        this.displayName = builder.displayName;
         this.role = builder.role;
         this.abilities = Set.copyOf(builder.abilities);
+        this.toolRuntime = new ToolRuntime(ToolRuntime.Config.builder()
+                .globalConcurrency(builder.concurrency)
+                .perSessionConcurrency(builder.concurrency)
+                .build(), createReportOutbox(builder), this::onReportAlert);
         this.workspace = builder.workspace;
         this.recoveryPolicy = builder.recoveryPolicy;
         this.permissionPolicy = builder.permissionPolicy;
@@ -70,8 +88,10 @@ public final class DigitalWorker {
         this.approvalHook = new WorkerApprovalHook(
                 permissionPolicy, approvalChannel, builder.approvalHandler, builder.approvalAudit);
         this.workerHooks = List.copyOf(builder.workerHooks);
-        this.agentSessionTaskHandler = builder.taskHandler == null
-                ? new AgentSessionTaskHandler(this::newAgent) : null;
+        this.agentSessionTaskHandler = new AgentSessionTaskHandler(this::newAgent);
+        if (builder.subtaskMcpResolver != null) {
+            this.agentSessionTaskHandler.subtaskMcpResolver(builder.subtaskMcpResolver);
+        }
         this.taskHandler = builder.taskHandler != null ? builder.taskHandler : (task, progress) -> {
             if (isAgentSessionTask(task)) {
                 return agentSessionTaskHandler.execute(task, progress);
@@ -83,6 +103,7 @@ public final class DigitalWorker {
                 : new PlatformTaskReporter(auth,
                 new RestClient(baseUrl, auth::accessToken, builder.requestTimeout, Map.of()));
         this.taskExecutor = new TaskExecutor(taskHandler, reporter);
+        this.agentSessionTaskHandler.onControl(taskExecutor::registerControl, taskExecutor::unregisterControl);
         this.identityValidator = builder.identityValidator;
         this.configuredClientId = builder.clientId;
         this.configuredDeviceId = builder.deviceId;
@@ -106,16 +127,39 @@ public final class DigitalWorker {
         started = true;
         try {
             auth.authenticate(baseUrl);
+            if (identity == null) {
+                WorkerRegistrationResult registration = workerRegistrar.register(
+                        new WorkerRegistrationRequest(displayName, role, abilities));
+                if (registration == null) {
+                    throw new IllegalStateException("WorkerRegistrar returned no registration result");
+                }
+                identity = registration.identity();
+            }
             identityValidator.validate(identity, role, abilities);
             instanceId = role == WorkerRole.PRIMARY_CLI ? InstanceIdStore.loadOrCreate(workspace) : null;
             clientId = configuredClientId != null ? configuredClientId : UUID.randomUUID().toString();
             deviceId = configuredDeviceId != null ? configuredDeviceId : auth.deviceId();
+            subtaskOrchestrator = new SubtaskOrchestrator(restClient, clientId, deviceId,
+                    new LocalSubtaskExecutor() {
+                        @Override
+                        public boolean submit(SubtaskTask task,
+                                              io.taiyiflow.sdk.core.dispatch.ToolExecutionContext.Cancellation cancellation) {
+                            return submitLocalSubtask(task);
+                        }
+
+                        @Override
+                        public void cancel(SubtaskTask task) {
+                            cancelLocalSubtask(task);
+                        }
+                    });
             readyLatch = new CountDownLatch(1);
             collaboration = new CollaborationPlugin(
                     baseUrl, auth::accessToken, role.protocolName(), clientId, deviceId, instanceId, Map.of())
                     .onTaskDispatch(this::dispatch)
                     .onTaskSnapshot(taskExecutor::reconcile)
+                    .onTaskCancel(this::cancel)
                     .onConnectionReady(payload -> {
+                        flushReports();
                         runtime.online();
                         readyLatch.countDown();
                     })
@@ -138,9 +182,11 @@ public final class DigitalWorker {
 
     public void pause() {
         runtime.pause();
+        taskExecutor.pauseAll();
     }
 
     public void resume() {
+        taskExecutor.resumeAll();
         runtime.resume();
     }
 
@@ -161,10 +207,15 @@ public final class DigitalWorker {
                 throw new IllegalStateException("Digital worker did not drain before timeout");
             }
         } finally {
+            taskExecutor.cancelAll("worker-stop");
             runtime.offline();
+            if (subtaskOrchestrator != null) {
+                subtaskOrchestrator.close();
+            }
             if (agentSessionTaskHandler != null) {
                 agentSessionTaskHandler.close();
             }
+            toolRuntime.close();
             notifyHooks(WorkerHook::onStop);
         }
     }
@@ -206,6 +257,42 @@ public final class DigitalWorker {
         return current != null && current.isConnected();
     }
 
+    ToolRuntime toolRuntime() {
+        return toolRuntime;
+    }
+
+    ReportOutbox reportOutbox() {
+        return toolRuntime.getReportOutbox();
+    }
+
+    private void flushReports() {
+        try {
+            toolRuntime.flushClientResults(restClient);
+            taskExecutor.flushUnknownReports();
+            agentSessionTaskHandler.flushResumeReports(toolRuntime.getReportOutbox());
+        } catch (RuntimeException exception) {
+            notifyHooks(hook -> hook.onError("report-outbox", exception));
+        }
+    }
+
+    private void onReportAlert(ReportAlert alert) {
+        notifyHooks(hook -> hook.onError("report-outbox", new IllegalStateException(
+                "Unconfirmed " + alert.reportType() + " for session " + alert.sessionId()
+                        + ", run " + alert.runId() + ", call " + alert.callId()
+                        + ", checkpoint " + alert.checkpointId())));
+    }
+
+    private static ReportOutbox createReportOutbox(Builder builder) {
+        if (builder.stateDir == null) {
+            return new InMemoryReportOutbox(builder.outboxLimits);
+        }
+        try {
+            return new FileReportOutbox(builder.stateDir, builder.outboxLimits);
+        } catch (java.io.IOException exception) {
+            throw new IllegalStateException("Unable to initialize the worker report outbox", exception);
+        }
+    }
+
     public RecoveryPolicy getRecoveryPolicy() {
         return recoveryPolicy;
     }
@@ -219,7 +306,7 @@ public final class DigitalWorker {
     }
 
     private TaiyiAgent newAgent(String flowId) {
-        return TaiyiAgent.builder()
+        TaiyiAgent agent = TaiyiAgent.builder()
                 .baseUrl(baseUrl)
                 .accessToken(auth::accessToken)
                 .flowId(flowId)
@@ -229,7 +316,30 @@ public final class DigitalWorker {
                 .recoveryPolicy(recoveryPolicy)
                 .permissionPolicy(permissionPolicy)
                 .permissionHook(approvalHook)
+                .toolRuntime(toolRuntime)
                 .build();
+        SubtaskOrchestrator orchestrator = subtaskOrchestrator;
+        if (orchestrator != null) {
+            orchestrator.register(agent.getPluginManager());
+        }
+        return agent;
+    }
+
+    private void cancel(CollaborationPlugin.TaskCancel cancel) {
+        taskExecutor.cancel(cancel);
+    }
+
+    private boolean submitLocalSubtask(SubtaskTask task) {
+        return dispatch(CollaborationPlugin.taskFromPayload(task.payload(), "remote_task"));
+    }
+
+    private void cancelLocalSubtask(SubtaskTask task) {
+        CollaborationPlugin.TaskCancel cancel = new CollaborationPlugin.TaskCancel();
+        cancel.taskId = task.taskId();
+        cancel.taskKind = "dialogue_subtask";
+        cancel.version = task.version();
+        cancel.cancelRequestId = UUID.randomUUID().toString();
+        taskExecutor.cancel(cancel);
     }
 
     private static boolean isAgentSessionTask(CollaborationPlugin.TaskDispatch task) {
@@ -239,16 +349,30 @@ public final class DigitalWorker {
     }
 
     private boolean dispatch(CollaborationPlugin.TaskDispatch task) {
-        return runtime.submit(() -> {
+        if ("primary".equals(task.taskType)) {
+            return runtime.submit(() -> {
+                notifyHooks(hook -> hook.onTaskStart(task));
+                TaskExecutionState state = TaskExecutionState.SUCCESS;
+                try {
+                    taskHandler.execute(task, progress -> { });
+                } catch (Exception exception) {
+                    state = TaskExecutionState.FAILED;
+                    notifyHooks(hook -> hook.onError("task", exception));
+                    log.error("Worker task execution failed: {}", task.taskId, exception);
+                }
+                TaskExecutionState finalState = state;
+                notifyHooks(hook -> hook.onTaskFinish(task, finalState));
+            });
+        }
+        TaskExecutor.Reservation reservation = taskExecutor.prepare(task);
+        if (!reservation.accepted()) {
+            return false;
+        }
+        WorkerRuntime.Submission submission = runtime.submitWithHandle(() -> {
             notifyHooks(hook -> hook.onTaskStart(task));
             TaskExecutionState state;
             try {
-                if ("primary".equals(task.taskType)) {
-                    taskHandler.execute(task, progress -> { });
-                    state = TaskExecutionState.SUCCESS;
-                } else {
-                    state = taskExecutor.execute(task);
-                }
+                state = taskExecutor.executePrepared(reservation);
             } catch (Exception exception) {
                 state = TaskExecutionState.FAILED;
                 notifyHooks(hook -> hook.onError("task", exception));
@@ -257,6 +381,12 @@ public final class DigitalWorker {
             TaskExecutionState finalState = state;
             notifyHooks(hook -> hook.onTaskFinish(task, finalState));
         });
+        if (!submission.accepted()) {
+            taskExecutor.reject(reservation);
+            return false;
+        }
+        taskExecutor.attachFuture(reservation, submission.future());
+        return true;
     }
 
     private void notifyHooks(Consumer<WorkerHook> action) {
@@ -273,9 +403,13 @@ public final class DigitalWorker {
         private String baseUrl;
         private WorkerAuth auth;
         private WorkerIdentity identity;
+        private WorkerRegistrar workerRegistrar;
+        private String displayName;
         private WorkerRole role = WorkerRole.COLLABORATION_WORKER;
         private Set<Ability> abilities = Set.of();
         private Path workspace;
+        private Path stateDir;
+        private ReportOutbox.Limits outboxLimits = ReportOutbox.Limits.DEFAULT;
         private int concurrency = 3;
         private RecoveryPolicy recoveryPolicy = RecoveryPolicy.AUTO;
         private PermissionPolicy permissionPolicy = PermissionPolicy.CONFIRM;
@@ -284,6 +418,7 @@ public final class DigitalWorker {
         private ApprovalAudit approvalAudit;
         private final List<WorkerHook> workerHooks = new java.util.ArrayList<>();
         private WorkerTaskHandler taskHandler;
+        private SubtaskMcpResolver subtaskMcpResolver;
         private TaskReporter taskReporter;
         private WorkerIdentityValidator identityValidator;
         private String clientId;
@@ -304,6 +439,19 @@ public final class DigitalWorker {
 
         public Builder identity(WorkerIdentity value) {
             this.identity = value;
+            if (value != null) {
+                this.displayName = value.displayName();
+            }
+            return this;
+        }
+
+        public Builder displayName(String value) {
+            this.displayName = value;
+            return this;
+        }
+
+        public Builder workerRegistrar(WorkerRegistrar value) {
+            this.workerRegistrar = value;
             return this;
         }
 
@@ -319,6 +467,16 @@ public final class DigitalWorker {
 
         public Builder workspace(Path value) {
             this.workspace = value;
+            return this;
+        }
+
+        public Builder stateDir(Path value) {
+            this.stateDir = value;
+            return this;
+        }
+
+        public Builder outboxLimits(ReportOutbox.Limits value) {
+            this.outboxLimits = java.util.Objects.requireNonNull(value, "outboxLimits");
             return this;
         }
 
@@ -367,6 +525,11 @@ public final class DigitalWorker {
             return this;
         }
 
+        public Builder subtaskMcpResolver(SubtaskMcpResolver value) {
+            this.subtaskMcpResolver = value;
+            return this;
+        }
+
         public Builder taskReporter(TaskReporter value) {
             this.taskReporter = value;
             return this;
@@ -412,15 +575,21 @@ public final class DigitalWorker {
         }
 
         public DigitalWorker build() {
-            if (baseUrl == null || baseUrl.isBlank() || auth == null || identity == null || workspace == null) {
-                throw new IllegalStateException("baseUrl, auth, identity and workspace are required");
+            if (baseUrl == null || baseUrl.isBlank() || auth == null || workspace == null) {
+                throw new IllegalStateException("baseUrl, auth and workspace are required");
+            }
+            if (identity == null && workerRegistrar == null) {
+                throw new IllegalStateException("identity or workerRegistrar is required");
+            }
+            if (identity == null && (displayName == null || displayName.isBlank())) {
+                throw new IllegalStateException("displayName is required when workerRegistrar supplies the identity");
             }
             if (role == null || recoveryPolicy == null || permissionPolicy == null || approvalChannel == null) {
                 throw new IllegalStateException("Worker role and policies must not be null");
             }
             if (identityValidator == null) {
                 throw new IllegalStateException(
-                        "Platform identityValidator is required; SDK never self-registers a workerId");
+                        "Third-party identityValidator is required; SDK never self-registers a workerId");
             }
             return new DigitalWorker(this);
         }

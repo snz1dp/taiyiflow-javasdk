@@ -11,8 +11,9 @@ public enum PermissionPolicy implements PermissionHook {
     READONLY;
 
     private static final Set<String> MUTATING_TOOLS = Set.of(
-            "shell", "bash", "execute_command", "shell_exec", "task_stop", "task_delete",
-            "task_cleanup", "todo_write", "file_edit", "document_unstructured", "write_file");
+            "shell", "bash", "execute_command", "shell_exec", "process_stop", "process_cleanup",
+            "task_stop", "task_delete", "task_cleanup", "todo_write", "file_edit",
+            "document_unstructured", "write_file");
 
     @Override
     public CompletableFuture<Decision> onPermission(String sessionId, ToolCall toolCall) {
@@ -23,7 +24,7 @@ public enum PermissionPolicy implements PermissionHook {
         return CompletableFuture.completedFuture(decision);
     }
 
-    private static boolean isMutating(String toolName) {
+    public static boolean isMutating(String toolName) {
         if (toolName != null && toolName.startsWith("taiyiflow-in-chrome__")) {
             String suffix = toolName.substring("taiyiflow-in-chrome__".length());
             return !Set.of("tabs_context", "read_text", "read_console").contains(suffix);

@@ -8,7 +8,13 @@ import io.taiyiflow.sdk.StreamProtocol;
 import io.taiyiflow.sdk.TaiyiAgent;
 import io.taiyiflow.sdk.core.dispatch.ApprovalBroker;
 import io.taiyiflow.sdk.core.dispatch.ToolDispatcher;
+import io.taiyiflow.sdk.core.dispatch.ToolExecutionContext;
+import io.taiyiflow.sdk.core.report.CheckpointToolResultsAdapter;
+import io.taiyiflow.sdk.core.report.ClientToolResultAdapter;
+import io.taiyiflow.sdk.core.report.ReportAlert;
+import io.taiyiflow.sdk.core.report.ReportOutbox;
 import io.taiyiflow.sdk.core.state.SessionState;
+import io.taiyiflow.sdk.core.subtask.SubtaskCapabilitySnapshot;
 import io.taiyiflow.sdk.hooks.PermissionHook;
 import io.taiyiflow.sdk.hooks.SessionHook;
 import io.taiyiflow.sdk.hooks.StreamHook;
@@ -27,7 +33,7 @@ import io.taiyiflow.sdk.transport.stream.StreamClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.nio.charset.StandardCharsets;
+import java.io.IOException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -38,6 +44,8 @@ import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Future;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -55,6 +63,12 @@ public class AgentSessionImpl implements AgentSession {
             "completed", "complete", "done", "success", "succeeded");
     private static final Set<String> FAILED_RUN_STATUSES = Set.of(
             "failed", "error", "expired", "producer_lost");
+    private static final ScheduledExecutorService WATCHDOG_SCHEDULER =
+            Executors.newSingleThreadScheduledExecutor(runnable -> {
+                Thread thread = new Thread(runnable, "taiyiflow-stream-watchdog");
+                thread.setDaemon(true);
+                return thread;
+            });
 
     private final TaiyiAgent agent;
     private volatile String sessionId;
@@ -69,6 +83,10 @@ public class AgentSessionImpl implements AgentSession {
     private final List<PermissionHook> permissionHooks = new ArrayList<>();
     private final List<SessionHook> sessionHooks = new ArrayList<>();
     private final Map<String, ObjectNode> pendingToolResults = new ConcurrentHashMap<>();
+    private final StreamIdleWatchdog streamWatchdog = new StreamIdleWatchdog(
+            WATCHDOG_SCHEDULER, Duration.ofSeconds(90), Duration.ofMinutes(15));
+    private volatile StreamIdleWatchdog.Arm watchdogArm;
+    private volatile Object streamIdentity;
     private volatile CountDownLatch completionLatch = new CountDownLatch(1);
     private volatile Future<?> runningTask;
     private volatile Future<?> eventTask;
@@ -79,6 +97,10 @@ public class AgentSessionImpl implements AgentSession {
     private volatile boolean serverCloseReceived;
     private volatile boolean toolExecutionObserved;
     private volatile Throwable terminalStreamError;
+    private volatile ReportOutbox.Entry activeResumeEntry;
+    private volatile boolean activeResumePersisted;
+    private volatile ToolExecutionContext.CancellationSource toolCancellation =
+            new ToolExecutionContext.CancellationSource();
 
     public AgentSessionImpl(TaiyiAgent agent, String sessionId, SessionManager sessionManager) {
         this.agent = agent;
@@ -108,19 +130,28 @@ public class AgentSessionImpl implements AgentSession {
 
     @Override
     public AgentSession chat(String message, Map<String, JsonNode> tweaks, List<String> inputFiles) {
+        ChatRequest request = new ChatRequest(message, sessionId);
+        if (tweaks != null) {
+            request.setTweaks(tweaks);
+        }
+        if (inputFiles != null) {
+            request.setInputFiles(List.copyOf(inputFiles));
+        }
+        return chat(request);
+    }
+
+    @Override
+    public AgentSession chat(ChatRequest request) {
         synchronized (executionLock) {
             SessionState previous = state.get();
             if (previous != SessionState.IDLE && previous != SessionState.DONE
                     && previous != SessionState.CANCELLED) {
                 throw new IllegalStateException("Session is already active: " + previous);
             }
-            ChatRequest request = new ChatRequest(message, sessionId);
-            if (tweaks != null) {
-                request.setTweaks(tweaks);
+            if (request == null || request.getInputValue() == null) {
+                throw new IllegalArgumentException("Chat request input is required");
             }
-            if (inputFiles != null) {
-                request.setInputFiles(List.copyOf(inputFiles));
-            }
+            request.setSessionId(sessionId);
             if (agent.getFlowAdapter() != null) {
                 agent.getFlowAdapter().customize(request);
             }
@@ -133,6 +164,9 @@ public class AgentSessionImpl implements AgentSession {
                 request.setSubscriptionId(newId());
             }
             pendingToolResults.clear();
+            activeResumeEntry = null;
+            agent.getToolRuntime().clearRecoverySafety(sessionId);
+            resetToolCancellation();
             runContext.begin(request);
             return startExecution(request, SessionState.CONNECTING, previous, true, false, false);
         }
@@ -225,6 +259,11 @@ public class AgentSessionImpl implements AgentSession {
         return current;
     }
 
+    private void resetToolCancellation() {
+        toolCancellation.cancel();
+        toolCancellation = new ToolExecutionContext.CancellationSource();
+    }
+
     private AgentSession startFromTemplate(String input, SessionState previous) {
         ChatRequest request = new ChatRequest(input, sessionId);
         request.setTweaks(runContext.getLastTweaks());
@@ -239,6 +278,9 @@ public class AgentSessionImpl implements AgentSession {
         request.setMessageId(newId());
         request.setSubscriptionId(newId());
         pendingToolResults.clear();
+        activeResumeEntry = null;
+        agent.getToolRuntime().clearRecoverySafety(sessionId);
+        resetToolCancellation();
         runContext.begin(request);
         return startExecution(request, SessionState.CONNECTING, previous, true, false, false);
     }
@@ -297,6 +339,7 @@ public class AgentSessionImpl implements AgentSession {
     }
 
     private ChatRequest buildAttachRequest(String executionAttemptId) {
+        activeResumeEntry = null;
         ChatRequest request = recoveryRequest("attach");
         request.setExecutionAttemptId(executionAttemptId != null
                 ? executionAttemptId : runContext.getExecutionAttemptId());
@@ -310,18 +353,29 @@ public class AgentSessionImpl implements AgentSession {
         request.setRunId(checkpoint.getRunId());
         request.setCheckpointId(checkpoint.getId());
         request.setCheckpointVersion(checkpoint.getVersion());
-        List<JsonNode> results = new ArrayList<>();
-        for (String callId : checkpoint.getWaitingCallIds()) {
-            ObjectNode pending = pendingToolResults.get(callId);
-            if (pending != null) {
-                results.add(pending.deepCopy());
-            }
+        CheckpointToolResultsAdapter adapter = new CheckpointToolResultsAdapter(
+                agent.getToolRuntime().getReportOutbox());
+        CheckpointToolResultsAdapter.Prepared prepared;
+        try {
+            prepared = adapter.prepare(checkpoint, agent.getFlowId(), sessionId, pendingToolResults);
+            activeResumePersisted = true;
+        } catch (ReportOutbox.ReportConflictException conflict) {
+            activeResumeEntry = null;
+            throw new IllegalStateException("Checkpoint tool result requires reconciliation: "
+                    + checkpoint.getId(), conflict);
+        } catch (IOException persistenceFailure) {
+            // The deterministic payload is still sent once, but a failed direct attempt makes
+            // this session unsafe for automatic recovery and raises a severe worker alert.
+            prepared = adapter.direct(checkpoint, agent.getFlowId(), sessionId, pendingToolResults);
+            activeResumePersisted = false;
         }
-        if (!results.isEmpty()) {
+        activeResumeEntry = prepared.entry();
+        if (prepared.hasResults()) {
+            // Restore the exact nodes without exposing or rebuilding any tool execution plan.
+            List<JsonNode> results = new ArrayList<>();
+            prepared.toolResults().forEach(result -> results.add(result.deepCopy()));
             request.setToolResults(results);
-            String submission = checkpoint.getId() + ":" + checkpoint.getVersion() + ":" + results;
-            request.setSubmissionId(UUID.nameUUIDFromBytes(
-                    submission.getBytes(StandardCharsets.UTF_8)).toString());
+            request.setSubmissionId(prepared.entry().getSubmissionId());
         }
         request.setSubscriptionId(newId());
         return request;
@@ -364,6 +418,11 @@ public class AgentSessionImpl implements AgentSession {
         fallbackUsed.set(false);
         SessionEventQueue queue = new SessionEventQueue(agent.getEventQueueCapacity());
         eventQueue = queue;
+        Object identity = new Object();
+        streamIdentity = identity;
+        String runId = runContext.getRunId();
+        watchdogArm = streamWatchdog.start(runId, generation, identity,
+                () -> onStreamIdleTimeout(runId, generation, identity));
         eventTask = sessionManager.getExecutor().submit(() -> consumeEvents(queue, generation));
         if (notifyStart) {
             notifyLifecycleStart();
@@ -413,10 +472,20 @@ public class AgentSessionImpl implements AgentSession {
     }
 
     private void replayPendingToolResults() {
-        ToolResultReporter reporter = new ToolResultReporter(agent.getRestClient());
-        for (Map.Entry<String, ObjectNode> entry : pendingToolResults.entrySet()) {
-            reporter.reportPayload(entry.getValue().deepCopy());
-            pendingToolResults.remove(entry.getKey(), entry.getValue());
+        ToolResultReporter reporter = new ToolResultReporter(agent.getRestClient(), agent.getToolRuntime());
+        reporter.flushNow();
+        pruneAcknowledgedToolResults();
+    }
+
+    private void pruneAcknowledgedToolResults() {
+        for (Map.Entry<String, ObjectNode> pending : pendingToolResults.entrySet()) {
+            ObjectNode payload = pending.getValue();
+            String id = ReportOutbox.idFor(ReportOutbox.Type.CLIENT_TOOL_RESULT,
+                    payload.path("run_id").asText() + "\0" + payload.path("call_id").asText());
+            ReportOutbox.Entry stored = agent.getToolRuntime().getReportOutbox().find(id).orElse(null);
+            if (stored == null || stored.getStatus() == ReportOutbox.Status.DEAD_LETTER) {
+                pendingToolResults.remove(pending.getKey(), pending.getValue());
+            }
         }
     }
 
@@ -449,6 +518,7 @@ public class AgentSessionImpl implements AgentSession {
     @Override
     public AgentLoopControlResult cancel() throws Exception {
         synchronized (executionLock) {
+            toolCancellation.cancel();
             SessionState current = state.get();
             if (!isCancellable(current)) {
                 throw new IllegalStateException("Session cannot be cancelled: " + current);
@@ -475,6 +545,7 @@ public class AgentSessionImpl implements AgentSession {
     }
 
     private void interruptLocally() {
+        toolCancellation.cancel();
         SessionState current = state.get();
         if (current == SessionState.DONE || current == SessionState.ERROR
                 || current == SessionState.CANCELLED || current == SessionState.PAUSED) {
@@ -499,6 +570,7 @@ public class AgentSessionImpl implements AgentSession {
     }
 
     private void closeStreamResources() {
+        stopStreamWatchdog();
         StreamClient.StreamHandle handle = streamHandle;
         if (handle != null) {
             handle.abort();
@@ -580,6 +652,10 @@ public class AgentSessionImpl implements AgentSession {
     @Override
     public SessionState getState() {
         return state.get();
+    }
+
+    private static String requestMode(String value) {
+        return "ask".equals(value) || "plan".equals(value) || "agent".equals(value) ? value : "agent";
     }
 
     @Override
@@ -710,8 +786,8 @@ public class AgentSessionImpl implements AgentSession {
     private void consumeEvents(SessionEventQueue queue, long generation) {
         ToolDispatcher dispatcher = new ToolDispatcher(
                 agent.getPluginManager(), getToolHooks(), getPermissionHooks(),
-                agent.getPermissionTimeout(), approvalBroker);
-        ToolResultReporter resultReporter = new ToolResultReporter(agent.getRestClient());
+                agent.getPermissionTimeout(), approvalBroker, agent.getToolRuntime());
+        ToolResultReporter resultReporter = new ToolResultReporter(agent.getRestClient(), agent.getToolRuntime());
         try {
             while (true) {
                 SessionEventQueue.Item item = queue.take();
@@ -740,6 +816,7 @@ public class AgentSessionImpl implements AgentSession {
         if (!isGenerationCurrent(generation) || eventQueue != queue) {
             return;
         }
+        onStreamActivity();
         try {
             queue.event(event);
         } catch (InterruptedException e) {
@@ -769,6 +846,51 @@ public class AgentSessionImpl implements AgentSession {
         }
     }
 
+    private void onStreamActivity() {
+        StreamIdleWatchdog.Arm arm = watchdogArm;
+        if (arm != null) {
+            streamWatchdog.activity(arm, () -> onStreamIdleTimeout(
+                    arm.runId(), arm.recoveryGeneration(), arm.handleIdentity()));
+        }
+    }
+
+    private void onStreamToolStarted() {
+        StreamIdleWatchdog.Arm arm = watchdogArm;
+        if (arm != null) {
+            streamWatchdog.toolStarted(arm, () -> onStreamIdleTimeout(
+                    arm.runId(), arm.recoveryGeneration(), arm.handleIdentity()));
+        }
+    }
+
+    private void onStreamToolFinished() {
+        StreamIdleWatchdog.Arm arm = watchdogArm;
+        if (arm != null) {
+            streamWatchdog.toolFinished(arm, () -> onStreamIdleTimeout(
+                    arm.runId(), arm.recoveryGeneration(), arm.handleIdentity()));
+        }
+    }
+
+    private void onStreamIdleTimeout(String runId, long generation, Object identity) {
+        if (streamIdentity != identity || !isGenerationCurrent(generation)
+                || !java.util.Objects.equals(runContext.getRunId(), runId)) {
+            return;
+        }
+        SessionEventQueue queue = eventQueue;
+        if (queue != null && isActive()) {
+            enqueueError(generation, queue,
+                    new java.util.concurrent.TimeoutException("Stream idle watchdog timed out"));
+        }
+    }
+
+    private void stopStreamWatchdog() {
+        StreamIdleWatchdog.Arm arm = watchdogArm;
+        watchdogArm = null;
+        streamIdentity = null;
+        if (arm != null) {
+            streamWatchdog.stop(arm);
+        }
+    }
+
     private boolean isGenerationCurrent(long generation) {
         return runContext.getRecoveryGeneration() == generation;
     }
@@ -785,6 +907,9 @@ public class AgentSessionImpl implements AgentSession {
     private void handleStreamClose(long generation, String reason) {
         if (!isGenerationCurrent(generation)) {
             return;
+        }
+        if (!serverCloseReceived) {
+            failResumeSubmission(new IOException("resume-stream-ended-before-acknowledgement"));
         }
         SessionState current = state.get();
         if (current == SessionState.INTERRUPTED || current == SessionState.CANCELLED
@@ -812,6 +937,7 @@ public class AgentSessionImpl implements AgentSession {
         if (!isGenerationCurrent(generation)) {
             return;
         }
+        failResumeSubmission(error);
         SessionState current = state.get();
         if (current == SessionState.INTERRUPTED || current == SessionState.CANCELLED
                 || current == SessionState.PAUSED || current == SessionState.DISCONNECTED
@@ -831,6 +957,7 @@ public class AgentSessionImpl implements AgentSession {
             return;
         }
         state.set(SessionState.DISCONNECTED);
+        stopStreamWatchdog();
         StreamClient.StreamHandle handle = streamHandle;
         if (handle != null) {
             handle.abort();
@@ -846,8 +973,12 @@ public class AgentSessionImpl implements AgentSession {
         } else {
             notifyStreamClose(closeReason);
         }
-        if (agent.getRecoveryPolicy() == RecoveryPolicy.AUTO) {
+        if (agent.getRecoveryPolicy() == RecoveryPolicy.AUTO
+                && agent.getToolRuntime().isAutomaticRecoverySafe(sessionId)) {
             recoveryTask = sessionManager.getExecutor().submit(() -> recover(generation, error));
+        } else if (agent.getRecoveryPolicy() == RecoveryPolicy.AUTO) {
+            failRecovery(generation, new IllegalStateException(
+                    "Automatic recovery is unsafe after an unpersisted tool result report failure"));
         } else {
             completionLatch.countDown();
         }
@@ -976,7 +1107,7 @@ public class AgentSessionImpl implements AgentSession {
 
     private boolean canRestart(ResumableCheckpoint checkpoint) {
         if (!agent.isAutoRestartOnExecutionLoss() || runContext.getLastInputValue() == null
-                || toolExecutionObserved) {
+                || toolExecutionObserved || !agent.getToolRuntime().isAutomaticRecoverySafe(sessionId)) {
             return false;
         }
         return checkpoint == null || (checkpoint.getWaitingCallIds().isEmpty()
@@ -1024,6 +1155,7 @@ public class AgentSessionImpl implements AgentSession {
             return;
         }
         state.set(SessionState.DONE);
+        stopStreamWatchdog();
         pendingToolResults.clear();
         notifyStreamClose(reason);
         notifyLifecycleFinish();
@@ -1036,6 +1168,7 @@ public class AgentSessionImpl implements AgentSession {
             return;
         }
         state.set(SessionState.ERROR);
+        stopStreamWatchdog();
         approvalBroker.denyAll("Session execution failed");
         notifyStreamError(error);
         completionLatch.countDown();
@@ -1074,6 +1207,90 @@ public class AgentSessionImpl implements AgentSession {
         return value != null && value.isTextual() && !value.asText().isBlank() ? value.asText() : null;
     }
 
+    private void acknowledgeResumeSubmission() {
+        ReportOutbox.Entry entry = activeResumeEntry;
+        if (entry == null) {
+            return;
+        }
+        activeResumeEntry = null;
+        if (activeResumePersisted) {
+            try {
+                new CheckpointToolResultsAdapter(agent.getToolRuntime().getReportOutbox()).accepted(entry);
+            } catch (IOException exception) {
+                log.warn("Unable to clean acknowledged checkpoint submission {}", entry.getId());
+            }
+        }
+    }
+
+    private void failResumeSubmission(Throwable error) {
+        ReportOutbox.Entry entry = activeResumeEntry;
+        if (entry == null) {
+            return;
+        }
+        activeResumeEntry = null;
+        if (!activeResumePersisted) {
+            agent.getToolRuntime().reportFailure(ReportAlert.directResumeFailed(
+                    ReportOutbox.Type.CHECKPOINT_TOOL_RESULTS, agent.getFlowId(), sessionId,
+                    entry.getRunId(), entry.getCheckpointId()));
+            return;
+        }
+        try {
+            Exception exception = error instanceof Exception value ? value : new IOException("resume-report-failed");
+            new CheckpointToolResultsAdapter(agent.getToolRuntime().getReportOutbox()).failed(entry, exception);
+        } catch (Exception storageFailure) {
+            log.warn("Unable to update checkpoint submission {}", entry.getId());
+        }
+    }
+
+    /** Restart compensation entry point: loads a checkpoint and only submits its stored final results. */
+    public void recoverReport(ReportOutbox.Entry entry) {
+        synchronized (executionLock) {
+            if (state.get() != SessionState.IDLE) {
+                return;
+            }
+            long generation = runContext.nextRecoveryGeneration();
+            runContext.adoptExecution(entry.getRunId(), null, generation);
+            state.set(SessionState.RESUMING);
+            completionLatch = new CountDownLatch(1);
+            sessionManager.registerSession(this);
+            recoveryTask = sessionManager.getExecutor().submit(() -> recoverStoredReport(generation, entry));
+        }
+    }
+
+    private void recoverStoredReport(long generation, ReportOutbox.Entry entry) {
+        try {
+            List<ResumableCheckpoint> checkpoints = agent.executionControl()
+                    .listResumable(agent.getFlowId(), sessionId);
+            ResumableCheckpoint checkpoint = checkpoints.stream()
+                    .filter(candidate -> entry.getCheckpointId().equals(candidate.getId()))
+                    .findFirst().orElse(null);
+            if (checkpoint == null) {
+                agent.getToolRuntime().getReportOutbox().markDeadLetter(
+                        entry.getId(), "checkpoint-not-resumable");
+                throw new IllegalStateException("Checkpoint is not resumable: " + entry.getCheckpointId());
+            }
+            synchronized (executionLock) {
+                if (!isGenerationCurrent(generation)) {
+                    return;
+                }
+                // Preparation performs identity/version/waiting/uncertain reconciliation before I/O.
+                new CheckpointToolResultsAdapter(agent.getToolRuntime().getReportOutbox())
+                        .reconcile(entry, checkpoint, agent.getFlowId(), sessionId);
+                if (agent.getToolRuntime().getReportOutbox().find(entry.getId()).isEmpty()) {
+                    state.set(SessionState.DONE);
+                    completionLatch.countDown();
+                    sessionManager.removeSession(sessionId, this);
+                    return;
+                }
+                runContext.update(checkpoint, generation);
+                startExecution(buildResumeRequest(checkpoint), SessionState.RESUMING,
+                        SessionState.RESUMING, false, true, true);
+            }
+        } catch (Exception exception) {
+            failRecovery(generation, exception);
+        }
+    }
+
     private static String newId() {
         return UUID.randomUUID().toString();
     }
@@ -1083,6 +1300,7 @@ public class AgentSessionImpl implements AgentSession {
         if (!isGenerationCurrent(generation)) {
             return;
         }
+        acknowledgeResumeSubmission();
         runContext.update(event);
         if (event.isClose()) {
             serverCloseReceived = true;
@@ -1124,15 +1342,31 @@ public class AgentSessionImpl implements AgentSession {
         }
         state.set(SessionState.TOOL_CALLING);
         toolExecutionObserved = true;
+        onStreamToolStarted();
         try {
             ToolCall call = ClientToolCallParser.parse(event, agent.getFlowId(), sessionId);
-            ToolResult result = dispatcher.dispatch(sessionId, call);
-            pendingToolResults.put(call.getId(), ToolResultReporter.buildPayload(call, result));
-            resultReporter.report(call, result);
-            pendingToolResults.remove(call.getId());
+            ToolExecutionContext context = ToolExecutionContext.builder(agent.getFlowId(), sessionId)
+                    .runId(call.getRunId())
+                    .taskId(call.getId())
+                    .messageId(call.getMessageId())
+                    .requestMode(requestMode(runContext.getRequestType()))
+                    .capabilities(runContext.getCapabilities())
+                    .cancellation(toolCancellation)
+                    .build();
+            ToolResult result = dispatcher.dispatch(context, call);
+            ObjectNode payload = ToolResultReporter.buildPayload(call, result);
+            pendingToolResults.put(call.getId(), payload);
+            ClientToolResultAdapter.Result reported = resultReporter.reportPersisted(payload);
+            if (reported.terminal()) {
+                pendingToolResults.remove(call.getId());
+            }
+            if (reported.outcome() != ClientToolResultAdapter.Outcome.REPORTED) {
+                throw new ToolResultReporter.ToolResultReportException(call.getId(), reported.error());
+            }
         } catch (Exception e) {
             notifyStreamError(e);
         } finally {
+            onStreamToolFinished();
             state.compareAndSet(SessionState.TOOL_CALLING, SessionState.STREAMING);
         }
     }

@@ -10,7 +10,9 @@ import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -273,6 +275,219 @@ class ToolDispatcherTest {
         dispatcher.dispatch("s-1", makeCall("tool"));
 
         assertEquals("permission;before;takeover(null);execute;after;", order.toString());
+    }
+
+    @Test
+    void askApprovalDoesNotOccupyExecutionPermit() throws Exception {
+        ToolRuntime runtime = new ToolRuntime(new ToolRuntime.Config(
+                1, 1, 4, Duration.ofSeconds(5)));
+        CountDownLatch blockerStarted = new CountDownLatch(1);
+        CountDownLatch releaseBlocker = new CountDownLatch(1);
+        CountDownLatch permissionCalled = new CountDownLatch(1);
+        PluginManager pm = new PluginManager();
+        pm.register("block", call -> {
+            blockerStarted.countDown();
+            try {
+                assertTrue(releaseBlocker.await(2, TimeUnit.SECONDS));
+                return ToolResult.success(call.getId(), mapper.createObjectNode());
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw e;
+            }
+        });
+        pm.register("approved", call -> ToolResult.success(call.getId(), mapper.createObjectNode()));
+        PermissionHook permission = (sessionId, call) -> {
+            if ("approved".equals(call.getName())) {
+                permissionCalled.countDown();
+                return CompletableFuture.completedFuture(PermissionHook.Decision.ASK);
+            }
+            return CompletableFuture.completedFuture(PermissionHook.Decision.ALLOW);
+        };
+        ApprovalBroker approvals = new ApprovalBroker();
+        ToolDispatcher dispatcher = new ToolDispatcher(
+                pm, List.of(), List.of(permission), Duration.ZERO, approvals, runtime);
+        try {
+            CompletableFuture<ToolResult> blocking = CompletableFuture.supplyAsync(() ->
+                    dispatcher.dispatch(ToolExecutionContext.builder("flow", "blocking").build(),
+                            new ToolCall("tc-block", "block", mapper.createObjectNode())));
+            assertTrue(blockerStarted.await(1, TimeUnit.SECONDS));
+            CompletableFuture<ToolResult> approved = CompletableFuture.supplyAsync(() ->
+                    dispatcher.dispatch(ToolExecutionContext.builder("flow", "approved").build(),
+                            new ToolCall("tc-approved", "approved", mapper.createObjectNode())));
+            assertTrue(permissionCalled.await(1, TimeUnit.SECONDS));
+            Thread.sleep(30);
+            assertEquals(1, runtime.getScheduler().getRunningCount());
+            assertEquals(0, runtime.getScheduler().getQueuedCount(),
+                    "ASK approval must wait before scheduler admission");
+
+            awaitDecision(approvals, "tc-approved", true);
+            awaitQueued(runtime, 1);
+            releaseBlocker.countDown();
+            assertTrue(blocking.get(2, TimeUnit.SECONDS).isSuccess());
+            assertTrue(approved.get(2, TimeUnit.SECONDS).isSuccess());
+        } finally {
+            releaseBlocker.countDown();
+            runtime.close();
+        }
+    }
+
+    @Test
+    void beforeHookWaitDoesNotOccupyExecutionPermit() throws Exception {
+        ToolRuntime runtime = new ToolRuntime(new ToolRuntime.Config(
+                1, 1, 4, Duration.ofSeconds(5)));
+        CountDownLatch blockerStarted = new CountDownLatch(1);
+        CountDownLatch releaseBlocker = new CountDownLatch(1);
+        CountDownLatch beforeEntered = new CountDownLatch(1);
+        CountDownLatch releaseBefore = new CountDownLatch(1);
+        PluginManager pm = new PluginManager();
+        pm.register("block", call -> {
+            blockerStarted.countDown();
+            try {
+                assertTrue(releaseBlocker.await(2, TimeUnit.SECONDS));
+                return ToolResult.success(call.getId(), mapper.createObjectNode());
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw e;
+            }
+        });
+        pm.register("before", call -> ToolResult.success(call.getId(), mapper.createObjectNode()));
+        ToolExecutionHook beforeHook = new ToolExecutionHook() {
+            @Override
+            public ToolCall before(String sessionId, ToolCall toolCall) {
+                if ("before".equals(toolCall.getName())) {
+                    beforeEntered.countDown();
+                    try {
+                        assertTrue(releaseBefore.await(2, TimeUnit.SECONDS));
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException(e);
+                    }
+                }
+                return toolCall;
+            }
+        };
+        ToolDispatcher dispatcher = new ToolDispatcher(
+                pm, List.of(beforeHook), List.of(), Duration.ofSeconds(5), runtime);
+        try {
+            CompletableFuture<ToolResult> blocking = CompletableFuture.supplyAsync(() ->
+                    dispatcher.dispatch("blocking", new ToolCall(
+                            "tc-block", "block", mapper.createObjectNode())));
+            assertTrue(blockerStarted.await(1, TimeUnit.SECONDS));
+            CompletableFuture<ToolResult> before = CompletableFuture.supplyAsync(() ->
+                    dispatcher.dispatch("before", new ToolCall(
+                            "tc-before", "before", mapper.createObjectNode())));
+            assertTrue(beforeEntered.await(1, TimeUnit.SECONDS));
+            assertEquals(1, runtime.getScheduler().getRunningCount());
+            assertEquals(0, runtime.getScheduler().getQueuedCount(),
+                    "before hooks must run before scheduler admission");
+
+            releaseBefore.countDown();
+            awaitQueued(runtime, 1);
+            releaseBlocker.countDown();
+            assertTrue(blocking.get(2, TimeUnit.SECONDS).isSuccess());
+            assertTrue(before.get(2, TimeUnit.SECONDS).isSuccess());
+        } finally {
+            releaseBefore.countDown();
+            releaseBlocker.countDown();
+            runtime.close();
+        }
+    }
+
+    @Test
+    void runtimeExecutionTimeoutIsReturnedAsToolError() {
+        ToolRuntime runtime = new ToolRuntime(new ToolRuntime.Config(
+                1, 1, 1, Duration.ofMillis(30)));
+        PluginManager pm = new PluginManager();
+        pm.register("slow", call -> {
+            try {
+                Thread.sleep(5000);
+                return ToolResult.success(call.getId(), mapper.createObjectNode());
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw e;
+            }
+        });
+        ToolDispatcher dispatcher = new ToolDispatcher(pm, List.of(), List.of(), runtime);
+        try {
+            ToolResult result = dispatcher.dispatch("session", makeCall("slow"));
+            assertFalse(result.isSuccess());
+            assertTrue(result.getError().contains("timed out"));
+        } finally {
+            runtime.close();
+        }
+    }
+
+    @Test
+    void capabilitySnapshotCannotBeBypassedByTakeoverHook() {
+        PluginManager pm = new PluginManager();
+        AtomicInteger takeovers = new AtomicInteger();
+        ToolExecutionHook takeover = new ToolExecutionHook() {
+            @Override
+            public ToolResult takeover(String sessionId, ToolCall call) {
+                takeovers.incrementAndGet();
+                return ToolResult.success(call.getId(), mapper.createObjectNode());
+            }
+        };
+        ToolDispatcher dispatcher = new ToolDispatcher(pm, List.of(takeover), List.of());
+        ToolExecutionContext context = ToolExecutionContext.builder("flow", "child")
+                .requestMode("agent")
+                .allowedTools(Set.of("search"))
+                .build();
+
+        ToolResult denied = dispatcher.dispatch(context, makeCall("write_file"));
+
+        assertFalse(denied.isSuccess());
+        assertTrue(denied.getError().contains("capability snapshot"));
+        assertEquals(0, takeovers.get());
+    }
+
+    @Test
+    void askAndPlanModesRejectMutatingToolsBeforeExecution() {
+        PluginManager pm = new PluginManager();
+        AtomicInteger executions = new AtomicInteger();
+        pm.register("write_file", call -> {
+            executions.incrementAndGet();
+            return ToolResult.success(call.getId(), mapper.createObjectNode());
+        });
+        pm.register("search", call -> {
+            executions.incrementAndGet();
+            return ToolResult.success(call.getId(), mapper.createObjectNode());
+        });
+        ToolDispatcher dispatcher = new ToolDispatcher(pm, List.of(), List.of());
+        for (String mode : List.of("ask", "plan")) {
+            ToolExecutionContext context = ToolExecutionContext.builder("flow", "child-" + mode)
+                    .requestMode(mode)
+                    .build();
+            ToolResult denied = dispatcher.dispatch(context, makeCall("write_file"));
+            assertFalse(denied.isSuccess());
+            assertTrue(denied.getError().contains("Mutating tools"));
+            assertTrue(dispatcher.dispatch(context, makeCall("search")).isSuccess());
+        }
+        assertEquals(2, executions.get());
+    }
+
+    private static void awaitQueued(ToolRuntime runtime, int expected) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+        while (System.nanoTime() < deadline) {
+            if (runtime.getScheduler().getQueuedCount() == expected) {
+                return;
+            }
+            Thread.sleep(5);
+        }
+        assertEquals(expected, runtime.getScheduler().getQueuedCount());
+    }
+
+    private static void awaitDecision(ApprovalBroker approvals, String callId, boolean approve)
+            throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+        while (System.nanoTime() < deadline) {
+            boolean completed = approve ? approvals.approve(callId) : approvals.deny(callId, "not allowed");
+            if (completed) {
+                return;
+            }
+            Thread.sleep(5);
+        }
+        fail("Approval was not registered");
     }
 
     private static void awaitDecision(ApprovalBroker approvals, boolean approve) throws InterruptedException {

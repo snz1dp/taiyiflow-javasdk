@@ -23,6 +23,8 @@ class PermissionPolicyTest {
         assertEquals(PermissionHook.Decision.ALLOW, decision(PermissionPolicy.CONFIRM, "read_file"));
         assertEquals(PermissionHook.Decision.ASK, decision(PermissionPolicy.CONFIRM, "write_file"));
         assertEquals(PermissionHook.Decision.ASK, decision(PermissionPolicy.CONFIRM, "shell_exec"));
+        assertEquals(PermissionHook.Decision.ASK, decision(PermissionPolicy.CONFIRM, "process_stop"));
+        assertEquals(PermissionHook.Decision.ALLOW, decision(PermissionPolicy.CONFIRM, "process_output"));
     }
 
     @Test

@@ -44,10 +44,14 @@ public final class DigitalWorkerMain {
         DigitalWorker.Builder builder = DigitalWorker.builder()
                 .baseUrl(config.baseUrl())
                 .auth(auth)
-                .identity(WorkerIdentity.of(identity.workerId(), identity.displayName()))
+                .displayName(identity.displayName())
                 .role(identity.role())
                 .abilities(abilities)
                 .workspace(config.workspace())
+                .stateDir(config.stateDir())
+                .outboxLimits(new io.taiyiflow.sdk.core.report.ReportOutbox.Limits(
+                        config.outbox().maxEntries(), config.outbox().maxEntryBytes(),
+                        config.outbox().maxTotalBytes(), config.outbox().maxRetries()))
                 .clientId(config.clientId())
                 .deviceId(config.deviceId())
                 .concurrency(execution.concurrency())
@@ -59,8 +63,17 @@ public final class DigitalWorkerMain {
                 .approvalChannel(config.approval().channel())
                 .identityValidator(instantiateRequired(
                         extensions.identityValidator(), WorkerIdentityValidator.class, "extensions.identity-validator"));
+        if (identity.workerId() != null && !identity.workerId().isBlank()) {
+            builder.identity(WorkerIdentity.of(identity.workerId(), identity.displayName()));
+        }
+        if (extensions.workerRegistrar() != null && !extensions.workerRegistrar().isBlank()) {
+            builder.workerRegistrar(instantiate(extensions.workerRegistrar(), WorkerRegistrar.class));
+        }
         if (extensions.taskHandler() != null && !extensions.taskHandler().isBlank()) {
             builder.onTask(instantiate(extensions.taskHandler(), WorkerTaskHandler.class));
+        }
+        if (extensions.taskReporter() != null && !extensions.taskReporter().isBlank()) {
+            builder.taskReporter(instantiate(extensions.taskReporter(), TaskReporter.class));
         }
         if (extensions.approvalHandler() != null && !extensions.approvalHandler().isBlank()) {
             builder.approvalHandler(instantiate(extensions.approvalHandler(), PermissionHook.class));

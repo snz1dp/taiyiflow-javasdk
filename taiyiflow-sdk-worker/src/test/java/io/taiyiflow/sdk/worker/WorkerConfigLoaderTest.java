@@ -26,6 +26,12 @@ class WorkerConfigLoaderTest {
                   display-name: Test Worker
                   abilities: [shell, files]
                 workspace: /tmp/taiyiflow-worker
+                state-dir: /tmp/taiyiflow-runtime-state
+                outbox:
+                  max-entries: 20
+                  max-entry-bytes: 4096
+                  max-total-bytes: 65536
+                  max-retries: 5
                 recovery-policy: AUTO
                 permission-policy: CONFIRM
                 approval:
@@ -35,6 +41,9 @@ class WorkerConfigLoaderTest {
                   connect-timeout: PT20S
                 extensions:
                   identity-validator: example.PlatformIdentityValidator
+                  worker-registrar: example.IamWorkerRegistrar
+                  task-handler: example.BusinessTaskHandler
+                  task-reporter: example.BusinessTaskReporter
                   hooks: [example.MetricsHook]
                 """);
 
@@ -47,10 +56,18 @@ class WorkerConfigLoaderTest {
         assertEquals(WorkerRole.COLLABORATION_WORKER, loaded.identity().role());
         assertEquals(RecoveryPolicy.AUTO, loaded.recoveryPolicy());
         assertEquals(PermissionPolicy.CONFIRM, loaded.permissionPolicy());
+        assertEquals(Path.of("/tmp/taiyiflow-runtime-state"), loaded.stateDir());
+        assertEquals(20, loaded.outbox().maxEntries());
+        assertEquals(4096L, loaded.outbox().maxEntryBytes());
+        assertEquals(65536L, loaded.outbox().maxTotalBytes());
+        assertEquals(5, loaded.outbox().maxRetries());
         assertEquals(ApprovalChannel.PLATFORM, loaded.approval().channel());
         assertEquals(5, loaded.execution().concurrency());
         assertEquals(Duration.ofSeconds(20), loaded.execution().connectTimeout());
         assertEquals(Duration.ofSeconds(30), loaded.execution().requestTimeout());
         assertEquals("example.PlatformIdentityValidator", loaded.extensions().identityValidator());
+        assertEquals("example.IamWorkerRegistrar", loaded.extensions().workerRegistrar());
+        assertEquals("example.BusinessTaskHandler", loaded.extensions().taskHandler());
+        assertEquals("example.BusinessTaskReporter", loaded.extensions().taskReporter());
     }
 }

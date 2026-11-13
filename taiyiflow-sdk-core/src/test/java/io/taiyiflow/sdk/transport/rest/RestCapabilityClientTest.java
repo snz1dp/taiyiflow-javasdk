@@ -107,20 +107,28 @@ class RestCapabilityClientTest {
         StubRestClient rest = new StubRestClient();
         CollaborationTaskClient client = new CollaborationTaskClient(rest);
 
-        client.running("task/1", mapper.createObjectNode().put("percent", 25));
+        client.running("task/1", mapper.createObjectNode().put("percent", 25), 7L);
         assertEquals("PATCH /api/v1/agents/client/collaborations/task%2F1", rest.requests.get(0));
         assertEquals("running", rest.lastBody.required("status").asText());
         assertEquals(25, rest.lastBody.required("status_payload").required("percent").asInt());
+        assertEquals(7, rest.lastBody.required("expected_version").asLong());
 
-        client.success("task/1", "done");
+        client.success("task/1", "done", 8L);
         assertEquals("done", rest.lastBody.required("result_payload").required("result").asText());
-        client.failure("task/1", "boom");
+        assertEquals(8, rest.lastBody.required("expected_version").asLong());
+        client.failure("task/1", "boom", 9L);
         assertEquals("boom", rest.lastBody.required("error_message").asText());
+        assertEquals(9, rest.lastBody.required("expected_version").asLong());
         client.get("task/1");
         client.list(Map.of("active_only", true));
+        client.cancelled("task/1", "cancel-1", 10L);
 
         assertEquals("GET /api/v1/agents/client/collaborations/task%2F1", rest.requests.get(3));
         assertEquals("GET /api/v1/agents/client/collaborations?active_only=true", rest.requests.get(4));
+        assertEquals("PATCH /api/v1/agents/client/collaborations/task%2F1", rest.requests.get(5));
+        assertEquals("cancelled", rest.lastBody.required("status").asText());
+        assertEquals("cancel-1", rest.lastBody.required("status_payload").required("cancel_request_id").asText());
+        assertEquals(10, rest.lastBody.required("expected_version").asLong());
     }
 
     @Test
@@ -128,9 +136,11 @@ class RestCapabilityClientTest {
         StubRestClient rest = new StubRestClient();
         ScheduleClient client = new ScheduleClient(rest);
 
+        client.getRun("run/1");
         client.report("run/1", mapper.createObjectNode().put("status", "success"));
 
-        assertEquals("POST /api/v1/agents/client/schedules/runs/run%2F1/report", rest.requests.get(0));
+        assertEquals("GET /api/v1/agents/client/schedules/runs/run%2F1", rest.requests.get(0));
+        assertEquals("POST /api/v1/agents/client/schedules/runs/run%2F1/report", rest.requests.get(1));
         assertEquals("success", rest.lastBody.required("status").asText());
     }
 

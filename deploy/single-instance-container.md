@@ -5,17 +5,19 @@
 - 同一 workerId 只运行一个容器副本。编排系统使用 `Recreate` 更新策略，禁止滚动更新造成新旧副本并存。
 - 容器平台负责进程存活检测、故障摘除和快速拉起；平台协同 presence 心跳用于判断在线状态。SDK 不实现主备、选举、租约或 fencing。
 - workspace 使用持久卷，但只保存 instance_id、最小运行标识和临时文件。平台任务、run/checkpoint、结果、记忆、产物和审批记录才是权威状态。
-- 凭证通过容器 Secret 注入环境变量。持久令牌的加密文件与密钥放在独立的 `/var/lib/taiyiflow-credentials` 卷，不得放入 workspace 或镜像。
+- `state-dir` 使用独立的 `/var/lib/taiyiflow/runtime-state` 持久卷，只保存待补传的工具结果与 checkpoint 瞬态 Outbox；补传不会重新执行工具。未配置 `state-dir` 时使用非持久内存 Outbox，不适用于需要重启补传的容器部署。
+- 凭证通过容器 Secret 注入环境变量。持久令牌的加密文件与密钥放在独立的 `/var/lib/taiyiflow-credentials` 卷，不得放入 workspace、runtime-state 或镜像。
 
 ## 构建与启动
 
-实现平台身份校验适配器 `WorkerIdentityValidator`，按需提供 `WorkerTaskHandler`、`PermissionHook`、`ApprovalAudit` 和 `WorkerHook`。将业务适配器及依赖打包后放入 `/app/lib`，并在 `worker.yml` 的 `extensions` 中配置类名。身份校验适配器不可使用空实现。
+由业务接入方实现第三方身份校验适配器 `WorkerIdentityValidator`，对接其 IAM、worker 注册中心或其他权威身份系统；workerId 及认证主体、角色、能力绑定由该第三方实现登记和治理，智能体 Agent 后台不承担 workerId 登记。按需提供 `WorkerTaskHandler`、`PermissionHook`、`ApprovalAudit` 和 `WorkerHook`。将业务适配器及依赖打包后放入 `/app/lib`，并在 `worker.yml` 的 `extensions` 中配置类名。身份校验适配器不可使用空实现。
 
 ```bash
 docker build -t taiyiflow-worker:local .
 docker run --rm \
   -e TAIYIFLOW_API_KEY \
   -v taiyiflow-worker-state:/var/lib/taiyiflow/worker \
+  -v taiyiflow-worker-runtime-state:/var/lib/taiyiflow/runtime-state \
   -v taiyiflow-worker-credentials:/var/lib/taiyiflow-credentials \
   -v "$PWD/deploy/worker.yml:/config/worker.yml:ro" \
   -v "$PWD/build/adapters:/app/lib:ro" \

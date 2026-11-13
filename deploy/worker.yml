@@ -9,6 +9,12 @@ identity:
   # Declare only abilities implemented by the configured task handler or extensions.
   abilities: []
 workspace: /var/lib/taiyiflow/worker
+state-dir: /var/lib/taiyiflow/runtime-state
+outbox:
+  max-entries: 1000
+  max-entry-bytes: 1048576
+  max-total-bytes: 16777216
+  max-retries: 32
 recovery-policy: AUTO
 permission-policy: CONFIRM
 approval:

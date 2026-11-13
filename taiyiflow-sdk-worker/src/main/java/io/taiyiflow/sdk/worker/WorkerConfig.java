@@ -18,14 +18,25 @@ public record WorkerConfig(
         PermissionPolicy permissionPolicy,
         Approval approval,
         Execution execution,
-        Extensions extensions) {
+        Extensions extensions,
+        Path stateDir,
+        Outbox outbox) {
 
     public WorkerConfig {
         recoveryPolicy = recoveryPolicy == null ? RecoveryPolicy.AUTO : recoveryPolicy;
         permissionPolicy = permissionPolicy == null ? PermissionPolicy.CONFIRM : permissionPolicy;
         approval = approval == null ? new Approval(null) : approval;
         execution = execution == null ? new Execution(null, null, null, null) : execution;
-        extensions = extensions == null ? new Extensions(null, null, null, null, null) : extensions;
+        extensions = extensions == null ? new Extensions(null, null, null, null, null, null, null) : extensions;
+        outbox = outbox == null ? new Outbox(null, null, null, null) : outbox;
+    }
+
+    /** Source-compatible constructor for callers predating transient outbox configuration. */
+    public WorkerConfig(String baseUrl, Auth auth, Identity identity, Path workspace, String clientId,
+                        String deviceId, RecoveryPolicy recoveryPolicy, PermissionPolicy permissionPolicy,
+                        Approval approval, Execution execution, Extensions extensions) {
+        this(baseUrl, auth, identity, workspace, clientId, deviceId, recoveryPolicy, permissionPolicy,
+                approval, execution, extensions, null, null);
     }
 
     public enum AuthType {
@@ -72,14 +83,34 @@ public record WorkerConfig(
         }
     }
 
+    public record Outbox(
+            Integer maxEntries,
+            Long maxEntryBytes,
+            Long maxTotalBytes,
+            Integer maxRetries) {
+        public Outbox {
+            maxEntries = maxEntries == null ? 1000 : maxEntries;
+            maxEntryBytes = maxEntryBytes == null ? 1024L * 1024L : maxEntryBytes;
+            maxTotalBytes = maxTotalBytes == null ? 16L * 1024L * 1024L : maxTotalBytes;
+            maxRetries = maxRetries == null ? 32 : maxRetries;
+        }
+    }
+
     public record Extensions(
             String identityValidator,
+            String workerRegistrar,
             String taskHandler,
+            String taskReporter,
             String approvalHandler,
             String approvalAudit,
             List<String> hooks) {
         public Extensions {
             hooks = hooks == null ? List.of() : List.copyOf(hooks);
+        }
+
+        public Extensions(String identityValidator, String taskHandler, String approvalHandler,
+                          String approvalAudit, List<String> hooks) {
+            this(identityValidator, null, taskHandler, null, approvalHandler, approvalAudit, hooks);
         }
     }
 }

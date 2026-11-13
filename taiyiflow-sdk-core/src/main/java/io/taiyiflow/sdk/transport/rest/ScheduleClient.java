@@ -41,6 +41,10 @@ public class ScheduleClient {
                 Map.of("offset", offset, "limit", limit)));
     }
 
+    public JsonNode getRun(String runRecordId) throws Exception {
+        return rest.get(BASE + "/runs/" + RestClient.pathSegment(runRecordId));
+    }
+
     public JsonNode report(String runRecordId, JsonNode report) throws Exception {
         return rest.post(BASE + "/runs/" + RestClient.pathSegment(runRecordId) + "/report", report);
     }

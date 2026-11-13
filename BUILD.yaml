@@ -13,4 +13,5 @@ service:
     - TAIYIFLOW_WORKER_CONFIG=/config/worker.yml
   volumes:
     - taiyiflow-worker-state:/var/lib/taiyiflow/worker
+    - taiyiflow-worker-runtime-state:/var/lib/taiyiflow/runtime-state
     - taiyiflow-worker-credentials:/var/lib/taiyiflow-credentials

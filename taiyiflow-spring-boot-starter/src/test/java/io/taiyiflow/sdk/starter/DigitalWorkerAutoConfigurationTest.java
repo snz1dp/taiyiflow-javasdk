@@ -4,6 +4,9 @@ import io.taiyiflow.sdk.RecoveryPolicy;
 import io.taiyiflow.sdk.worker.ApprovalChannel;
 import io.taiyiflow.sdk.worker.DigitalWorker;
 import io.taiyiflow.sdk.worker.WorkerIdentityValidator;
+import io.taiyiflow.sdk.worker.WorkerRegistrar;
+import io.taiyiflow.sdk.worker.WorkerRegistrationResult;
+import io.taiyiflow.sdk.worker.WorkerIdentity;
 import io.taiyiflow.sdk.worker.WorkerState;
 import io.taiyiflow.sdk.worker.auth.WorkerAuth;
 import org.junit.jupiter.api.Test;
@@ -40,6 +43,20 @@ class DigitalWorkerAutoConfigurationTest {
         runner(workspace)
                 .withBean(WorkerAuth.class, () -> WorkerAuth.apiKey("api-key"))
                 .run(context -> assertTrue(context.getStartupFailure().getMessage().contains("identityValidator")));
+    }
+
+    @Test
+    void assemblesRegistrarWithoutConfiguredWorkerId(@TempDir Path workspace) {
+        runner(workspace)
+                .withPropertyValues("taiyiflow.worker.worker-id=")
+                .withBean(WorkerAuth.class, () -> WorkerAuth.apiKey("api-key"))
+                .withBean(WorkerRegistrar.class, () -> request -> WorkerRegistrationResult.of(
+                        WorkerIdentity.of("registered-worker", request.displayName())))
+                .withBean(WorkerIdentityValidator.class, () -> (identity, role, abilities) -> { })
+                .run(context -> {
+                    assertNull(context.getStartupFailure());
+                    assertEquals(WorkerState.OFFLINE, context.getBean(DigitalWorker.class).getState());
+                });
     }
 
     @Test

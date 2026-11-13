@@ -94,7 +94,7 @@ public class RestClient {
     public void delete(String path) throws Exception {
         HttpResponse<String> response = send(path, "DELETE", HttpRequest.BodyPublishers.noBody(), null,
                 HttpResponse.BodyHandlers.ofString());
-        if (response.statusCode() >= 400) {
+        if (response.statusCode() < 200 || response.statusCode() >= 300) {
             throw new RestException(response.statusCode(), response.body());
         }
     }
@@ -129,7 +129,7 @@ public class RestClient {
     private JsonNode sendJson(String path, String method, HttpRequest.BodyPublisher body, String contentType)
             throws Exception {
         HttpResponse<String> response = send(path, method, body, contentType, HttpResponse.BodyHandlers.ofString());
-        if (response.statusCode() >= 400) {
+        if (response.statusCode() < 200 || response.statusCode() >= 300) {
             throw new RestException(response.statusCode(), response.body());
         }
         if (response.body() == null || response.body().isBlank()) {
@@ -141,7 +141,7 @@ public class RestClient {
     private byte[] sendBytes(String path) throws Exception {
         HttpResponse<byte[]> response = send(path, "GET", HttpRequest.BodyPublishers.noBody(), null,
                 HttpResponse.BodyHandlers.ofByteArray());
-        if (response.statusCode() >= 400) {
+        if (response.statusCode() < 200 || response.statusCode() >= 300) {
             throw new RestException(response.statusCode(), new String(response.body(), StandardCharsets.UTF_8));
         }
         return response.body();
@@ -193,14 +193,47 @@ public class RestClient {
 
     public static class RestException extends RuntimeException {
         private final int statusCode;
+        private final JsonNode detail;
 
         public RestException(int statusCode, String body) {
-            super("REST error " + statusCode + ": " + body);
+            super("REST error " + statusCode);
             this.statusCode = statusCode;
+            this.detail = parseDetail(body);
         }
 
         public int getStatusCode() {
             return statusCode;
+        }
+
+        /** Structured backend detail; never requires matching localized response text. */
+        public JsonNode getDetail() {
+            return detail == null ? null : detail.deepCopy();
+        }
+
+        public String getDetailCode() {
+            if (detail == null) {
+                return null;
+            }
+            if (detail.isTextual()) {
+                return detail.asText();
+            }
+            JsonNode code = detail.get("code");
+            if (code == null) {
+                code = detail.get("detail");
+            }
+            return code != null && code.isTextual() ? code.asText() : null;
+        }
+
+        private static JsonNode parseDetail(String body) {
+            if (body == null || body.isBlank()) {
+                return null;
+            }
+            try {
+                JsonNode parsed = mapper.readTree(body);
+                return parsed != null && parsed.has("detail") ? parsed.get("detail") : parsed;
+            } catch (Exception ignored) {
+                return null;
+            }
         }
     }
 }

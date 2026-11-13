@@ -2,10 +2,16 @@ package io.taiyiflow.sdk.worker;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 final class WorkerRuntime {
     private final Object monitor = new Object();
@@ -17,7 +23,16 @@ final class WorkerRuntime {
     private int activeTasks;
 
     WorkerRuntime(int concurrency) {
-        this.taskExecutor = Executors.newFixedThreadPool(concurrency, Thread.ofVirtual().factory());
+        this(concurrency, 128);
+    }
+
+    WorkerRuntime(int concurrency, int queueCapacity) {
+        if (concurrency <= 0 || queueCapacity <= 0) {
+            throw new IllegalArgumentException("Worker concurrency and queue capacity must be positive");
+        }
+        this.taskExecutor = new ThreadPoolExecutor(concurrency, concurrency, 0, TimeUnit.MILLISECONDS,
+                new ArrayBlockingQueue<>(queueCapacity), Thread.ofVirtual().factory(),
+                new ThreadPoolExecutor.AbortPolicy());
     }
 
     void online() {
@@ -43,25 +58,24 @@ final class WorkerRuntime {
     }
 
     boolean submit(Runnable task) {
+        return submitWithHandle(task).accepted();
+    }
+
+    Submission submitWithHandle(Runnable task) {
         synchronized (monitor) {
             if (!acceptingTasks || terminated) {
-                return false;
+                return Submission.rejected();
             }
             activeTasks++;
             state = WorkerState.BUSY;
         }
+        TrackedTask tracked = new TrackedTask(task);
         try {
-            taskExecutor.execute(() -> {
-                try {
-                    task.run();
-                } finally {
-                    completeTask();
-                }
-            });
-            return true;
+            taskExecutor.execute(tracked);
+            return new Submission(tracked, true);
         } catch (RuntimeException e) {
-            completeTask();
-            return false;
+            tracked.cancel(false);
+            return new Submission(tracked, false);
         }
     }
 
@@ -89,7 +103,7 @@ final class WorkerRuntime {
             acceptingTasks = false;
             state = WorkerState.OFFLINE;
             List<Runnable> discardedTasks = taskExecutor.shutdownNow();
-            activeTasks -= discardedTasks.size();
+            discardedTasks.forEach(task -> ((TrackedTask) task).cancel(false));
             monitor.notifyAll();
         }
         offlineLatch.countDown();
@@ -108,6 +122,45 @@ final class WorkerRuntime {
     int activeTasks() {
         synchronized (monitor) {
             return activeTasks;
+        }
+    }
+
+    record Submission(Future<?> future, boolean accepted) {
+        private static Submission rejected() {
+            return new Submission(CompletableFuture.failedFuture(
+                    new RejectedExecutionException("Worker is not accepting tasks")), false);
+        }
+    }
+
+    private final class TrackedTask extends FutureTask<Void> {
+        private final AtomicBoolean completionSignaled = new AtomicBoolean();
+        private volatile boolean started;
+
+        private TrackedTask(Runnable task) {
+            super(task, null);
+        }
+
+        @Override
+        public void run() {
+            started = true;
+            try {
+                super.run();
+            } finally {
+                completeOnce();
+            }
+        }
+
+        @Override
+        protected void done() {
+            if (!started) {
+                completeOnce();
+            }
+        }
+
+        private void completeOnce() {
+            if (completionSignaled.compareAndSet(false, true)) {
+                completeTask();
+            }
         }
     }
 

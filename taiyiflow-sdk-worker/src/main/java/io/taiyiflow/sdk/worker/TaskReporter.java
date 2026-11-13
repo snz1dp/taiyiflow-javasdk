@@ -9,4 +9,8 @@ public interface TaskReporter {
     void success(CollaborationPlugin.TaskDispatch task, Object result) throws Exception;
 
     void failure(CollaborationPlugin.TaskDispatch task, String error) throws Exception;
+
+    default void cancelled(CollaborationPlugin.TaskDispatch task, String cancelRequestId) throws Exception {
+        throw new UnsupportedOperationException("Task cancellation reporting is not supported");
+    }
 }
