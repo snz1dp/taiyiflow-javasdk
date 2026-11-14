@@ -12,7 +12,7 @@ public final class HeadlessBrowserExample {
     public static void main(String[] args) throws Exception {
         TaiyiAgent agent = TaiyiAgent.builder().baseUrl(FlowMetadataExample.env("TAIYIFLOW_BASE_URL"))
                 .apiKey(FlowMetadataExample.env("TAIYIFLOW_API_KEY"))
-                .flowId(FlowMetadataExample.env("TAIYIFLOW_FLOW_ID")).build();
+                .flowId(System.getenv("TAIYIFLOW_FLOW_ID")).build();
         try {
             BrowserToolProvider.register(agent.getPluginManager(), agent.getRestClient(), BrowserSettings.builder()
                     .mode(BrowserSettings.Mode.HEADLESS)

@@ -112,7 +112,7 @@
 
 非流式运行请求在 ChatRequest 上附加 `async`：同步 `run(...)` 直接返回 `RunResult`；`submitAsync(...)` 仅接受 HTTP 202 与有效 taskId，随后通过 `GET /api/v1/run/tasks/{taskId}` 轮询，或 `POST /api/v1/run/tasks/{taskId}/cancel` 请求取消。提交结果未知时抛 `SubmissionUnknownException`，不能按失败直接重发。
 
-`/api/v1/config` 当前使用的字段包括：`stream_protocol`、`default_flow_id`、`doc_unstructured_flow_id`、`image_flow_id`、`audio_flow_id`、`video_flow_id`、`doc_exts`、`max_file_size_upload`（MiB）和 `once_max_file_count`。媒体 Flow 与默认 Flow 字段在对应能力启用时为必填；缺失时明确报错，不使用猜测值。
+`/api/v1/config` 当前使用的字段包括：`stream_protocol`、`default_flow_id`、`doc_unstructured_flow_id`、`image_flow_id`、`audio_flow_id`、`video_flow_id`、`doc_exts`、`max_file_size_upload`（MiB）和 `once_max_file_count`。未显式配置业务 flowId 时，`default_flow_id` 必填；各媒体 Flow 字段在对应理解能力启用时必填。缺失时明确报错，不使用猜测值。
 
 ## 鉴权与换牌
 

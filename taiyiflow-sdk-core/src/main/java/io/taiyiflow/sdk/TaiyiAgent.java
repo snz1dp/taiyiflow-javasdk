@@ -676,7 +676,7 @@ public class TaiyiAgent {
             if (useServerDefaultFlow && flowId != null && !flowId.isBlank()) {
                 throw new IllegalArgumentException("flowId and useServerDefaultFlow are mutually exclusive");
             }
-            if (useServerDefaultFlow) {
+            if (useServerDefaultFlow || flowId == null || flowId.isBlank()) {
                 RestClient configRest = restClient != null ? restClient
                         : new RestClient(baseUrl, accessToken, requestTimeout, credentialHeaders);
                 try {
@@ -684,9 +684,6 @@ public class TaiyiAgent {
                 } catch (Exception exception) {
                     throw new IllegalArgumentException("Unable to resolve the server default flow", exception);
                 }
-            }
-            if (flowId == null || flowId.isBlank()) {
-                throw new IllegalArgumentException("flowId or useServerDefaultFlow is required");
             }
             if (toolRuntime != null && toolRuntimeConfigSet) {
                 throw new IllegalArgumentException(

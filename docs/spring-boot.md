@@ -16,7 +16,7 @@
 
 ## TaiyiAgent 装配
 
-**条件**：`taiyiflow.base-url`、`taiyiflow.api-key` 齐备，且显式设置 `taiyiflow.flow-id` 或 `taiyiflow.use-default-flow=true` 才装配；产出 `TaiyiAgent` Bean（`destroyMethod="shutdown"`，`@ConditionalOnMissingBean` 可被自定义 Bean 覆盖）。
+**条件**：`taiyiflow.base-url`、`taiyiflow.api-key` 齐备即装配；`taiyiflow.flow-id` 可选，缺省时自动使用平台 `/config` 的 `default_flow_id`。产出 `TaiyiAgent` Bean（`destroyMethod="shutdown"`，`@ConditionalOnMissingBean` 可被自定义 Bean 覆盖）。
 
 ### 配置键（prefix = taiyiflow）
 
@@ -24,8 +24,8 @@
 taiyiflow:
   base-url: http://localhost:8080        # 必填（装配条件）
   api-key: ${TAIYIFLOW_API_KEY}          # 必填（装配条件）
-  flow-id: my-agent-flow                 # 与 use-default-flow=true 二选一
-  use-default-flow: false                # true 时使用平台 /config 的 default_flow_id
+  # flow-id: my-agent-flow               # 可选；缺省自动使用平台 /config 的 default_flow_id
+  use-default-flow: false                # 可选显式开关；flow-id 缺省时无需开启
   connect-timeout: 10s
   request-timeout: 30s
   max-sessions: 100

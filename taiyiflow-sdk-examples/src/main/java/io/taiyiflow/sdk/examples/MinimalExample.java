@@ -11,7 +11,7 @@ import io.taiyiflow.sdk.transport.envelope.StreamEvent;
  * Usage:
  *   export TAIYIFLOW_BASE_URL=https://api.taiyiflow.io
  *   export TAIYIFLOW_API_KEY=your-api-key
- *   export TAIYIFLOW_FLOW_ID=your-flow-id
+ *   export TAIYIFLOW_FLOW_ID=your-flow-id  # optional; defaults to the server default flow
  *   mvn exec:java -pl taiyiflow-sdk-examples
  */
 public class MinimalExample {
@@ -19,7 +19,7 @@ public class MinimalExample {
     public static void main(String[] args) throws Exception {
         String baseUrl = env("TAIYIFLOW_BASE_URL");
         String apiKey = env("TAIYIFLOW_API_KEY");
-        String flowId = env("TAIYIFLOW_FLOW_ID");
+        String flowId = System.getenv("TAIYIFLOW_FLOW_ID");
 
         // 1. Build agent
         TaiyiAgent agent = TaiyiAgent.builder()

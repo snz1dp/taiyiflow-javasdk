@@ -82,7 +82,7 @@ taiyiflow-javasdk/
 - 修改协议模型（envelope/EventConstants/CloseCodes）必须同步更新对照单测，与后端字符串逐一比对。
 - 新增工具插件：实现 `PluginManager.ToolHandler`，在 `BuiltinPlugins` 提供注册入口，并补沙盒/白名单测试。
 - 测试文件放各模块 `src/test/java` 同包路径下；涉及文件系统用 `@TempDir`；涉及进程超时注意先 `waitFor` 再读输出（参考 ShellPlugin 修复）。
-- 示例通过环境变量配置：`TAIYIFLOW_BASE_URL` / `TAIYIFLOW_API_KEY` / `TAIYIFLOW_FLOW_ID`。
+- 示例通过环境变量配置：`TAIYIFLOW_BASE_URL` / `TAIYIFLOW_API_KEY` 必填，`TAIYIFLOW_FLOW_ID` 可选（缺省使用服务端默认 Flow）。
 
 ## 计划文档
 

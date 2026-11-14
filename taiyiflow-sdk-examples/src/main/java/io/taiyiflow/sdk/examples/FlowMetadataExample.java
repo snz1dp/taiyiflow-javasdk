@@ -6,7 +6,7 @@ import io.taiyiflow.sdk.transport.envelope.FlowMetadata;
 public final class FlowMetadataExample {
     public static void main(String[] args) throws Exception {
         TaiyiAgent agent = TaiyiAgent.builder().baseUrl(env("TAIYIFLOW_BASE_URL"))
-                .apiKey(env("TAIYIFLOW_API_KEY")).flowId(env("TAIYIFLOW_FLOW_ID")).build();
+                .apiKey(env("TAIYIFLOW_API_KEY")).flowId(System.getenv("TAIYIFLOW_FLOW_ID")).build();
         try {
             FlowMetadata metadata = agent.getFlowMetadata();
             System.out.println("Flow: " + metadata.getName() + " (" + metadata.getId() + ")");

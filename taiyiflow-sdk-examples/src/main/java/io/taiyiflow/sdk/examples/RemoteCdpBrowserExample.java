@@ -12,7 +12,7 @@ public final class RemoteCdpBrowserExample {
     public static void main(String[] args) throws Exception {
         TaiyiAgent agent = TaiyiAgent.builder().baseUrl(FlowMetadataExample.env("TAIYIFLOW_BASE_URL"))
                 .apiKey(FlowMetadataExample.env("TAIYIFLOW_API_KEY"))
-                .flowId(FlowMetadataExample.env("TAIYIFLOW_FLOW_ID")).build();
+                .flowId(System.getenv("TAIYIFLOW_FLOW_ID")).build();
         try {
             BrowserSettings.Builder settings = BrowserSettings.builder().mode(BrowserSettings.Mode.REMOTE_CDP)
                     .remoteEndpoint(FlowMetadataExample.env("TAIYIFLOW_CDP_ENDPOINT"))

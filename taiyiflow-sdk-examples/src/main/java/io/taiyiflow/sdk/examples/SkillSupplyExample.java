@@ -24,7 +24,7 @@ public final class SkillSupplyExample {
                 .build(), SkillSupplyPolicy.localOnly());
         TaiyiAgent agent = TaiyiAgent.builder().baseUrl(FlowMetadataExample.env("TAIYIFLOW_BASE_URL"))
                 .apiKey(FlowMetadataExample.env("TAIYIFLOW_API_KEY"))
-                .flowId(FlowMetadataExample.env("TAIYIFLOW_FLOW_ID"))
+                .flowId(System.getenv("TAIYIFLOW_FLOW_ID"))
                 .skillSupplier(supplier, List.of()).build();
         try {
             SkillQuery query = new SkillQuery(agent.getFlowId(), "skill-example", "agent", "example", Set.of());

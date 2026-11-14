@@ -144,11 +144,26 @@ class TaiyiFlowAutoConfigurationTest {
     }
 
     @Test
-    void backsOffWithoutFlowSelection(@TempDir Path sandbox) {
-        runnerWithoutFlow(sandbox).run(context -> {
-            assertNull(context.getStartupFailure());
-            assertFalse(context.containsBean("taiyiAgent"));
+    void usesServerDefaultFlowWhenFlowIdIsOmitted(@TempDir Path sandbox) throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/api/v1/config", exchange -> {
+            byte[] body = "{\"default_flow_id\":\"server-flow\"}".getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
         });
+        server.start();
+        try {
+            runnerWithoutFlow(sandbox)
+                    .withPropertyValues("taiyiflow.base-url=http://127.0.0.1:" + server.getAddress().getPort())
+                    .run(context -> {
+                        assertNull(context.getStartupFailure());
+                        assertEquals("server-flow", context.getBean(TaiyiAgent.class).getFlowId());
+                    });
+        } finally {
+            server.stop(0);
+        }
     }
 
     @Test

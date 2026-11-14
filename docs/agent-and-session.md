@@ -19,8 +19,8 @@ TaiyiAgent agent = TaiyiAgent.builder()
 | `baseUrl(String)` | 必填 | 平台地址，非空非 blank |
 | `apiKey(String)` | 必填（与 accessToken 二选一） | 静态 API 密钥（API Key） |
 | `accessToken(Supplier<String>)` | — | 动态令牌供应器，每次请求读取最新值 |
-| `flowId(String)` | 与 `useServerDefaultFlow()` 二选一 | 显式绑定智能体 flow |
-| `useServerDefaultFlow()` | 关闭 | build 时读取 `/api/v1/config` 的 `default_flow_id`；与显式 flowId 互斥 |
+| `flowId(String)` | 服务端默认 Flow | 可选；未设置或 blank 时，build 自动读取 `/api/v1/config` 的 `default_flow_id` |
+| `useServerDefaultFlow()` | 关闭 | 显式使用服务端默认 Flow；省略 flowId 时无需调用；与显式 flowId 互斥 |
 | `clientId(String)` | `~/.taiyiflow/client-id` 持久化标识 | 客户端标识 |
 | `deviceId(String)` | 回退 collaborationDeviceId | 设备标识 |
 | `connectTimeout(Duration)` | 10s | 连接超时 |
@@ -98,7 +98,7 @@ TaiyiAgent agent = TaiyiAgent.builder()
 ### build() 校验
 
 - `baseUrl` 非空非 blank；`apiKey` 或 `accessToken` 至少一个。
-- 显式 `flowId` 与 `useServerDefaultFlow()` 必须二选一；后者要求平台 `/config` 返回非空 `default_flow_id`。
+- `flowId` 可省略；省略或 blank 时自动读取平台 `/config` 的非空 `default_flow_id`。显式 `flowId` 与 `useServerDefaultFlow()` 互斥。
 - `toolRuntime` 与 `toolRuntimeConfig` 互斥；注入的 runtime 不能已关闭。
 - `permissionTimeout`、`recoveryBackoff`、`recoveryMaxAttempts`、`eventQueueCapacity` 按上表规则校验。
 

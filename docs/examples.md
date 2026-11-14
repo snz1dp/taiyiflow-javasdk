@@ -9,17 +9,19 @@ examples 模块未配置默认 mainClass，需显式指定：
 ```bash
 export TAIYIFLOW_BASE_URL=http://localhost:8080
 export TAIYIFLOW_API_KEY=your-api-key
-export TAIYIFLOW_FLOW_ID=your-flow-id
+export TAIYIFLOW_FLOW_ID=your-flow-id  # 可选；缺省使用服务端默认 Flow
 
 ./mvnw -pl taiyiflow-sdk-examples -am compile exec:java \
     -Dexec.mainClass=io.taiyiflow.sdk.examples.<类名>
 ```
 
+`TAIYIFLOW_BASE_URL` 和 `TAIYIFLOW_API_KEY` 必填；`TAIYIFLOW_FLOW_ID` 仅用于显式覆盖服务端默认 Flow。下表“三个标准变量”均按此规则理解。
+
 ## 示例清单
 
 | 类名 | 演示内容 | 环境变量 |
 |------|---------|---------|
-| `MinimalExample` | 最小三步流式对话：builder → newSession + StreamHook → chat/await/shutdown | BASE_URL / API_KEY / FLOW_ID（缺失即退出） |
+| `MinimalExample` | 最小三步流式对话：builder → newSession + StreamHook → chat/await/shutdown | BASE_URL / API_KEY 必填；FLOW_ID 可选 |
 | `MultiSessionExample` | 多会话并行：maxSessions(10)，3 个会话并发提问，CountDownLatch 等待全部结束 | 三个标准变量 |
 | `ToolTakeoverExample` | 工具接管与权限钩子：takeover 拦截 `get_weather` 返回模拟天气；PermissionHook 对 shell/bash 返回 DENY | 三个标准变量 |
 | `PauseResumeExample` | 暂停/恢复：首个增量块（chunk）到达后 pause()，再 resume() 并 await(120s) 验证续跑完成 | 三个标准变量 |

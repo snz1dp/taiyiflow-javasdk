@@ -1,7 +1,7 @@
 # Plan: TaiyiFlow Java SDK Electron 后台能力对齐实施计划（Phase AA–AG）
 
 > 创建时间：2026-11-14。本文是默认 Flow、Flow Metadata、媒体理解、浏览器、高价值工具与 SKILL 供应机制的唯一权威实施计划，不再嵌入运行时路线图。
-> 实施状态：Phase AA–AG **SDK 侧已闭环**；Playwright Java、独立 browser 模块、默认 Flow 显式绑定、远程 CDP、完整 SKILL 供应及 worker/starter/示例/配置文档均已落地。真实平台、真实 Chromium/CDP、复杂 Docker 与所需 UI/平台验收仍由用户环境执行。
+> 实施状态：Phase AA–AG **SDK 侧已闭环**；Playwright Java、独立 browser 模块、flowId 缺省时自动回退默认 Flow、远程 CDP、完整 SKILL 供应及 worker/starter/示例/配置文档均已落地。真实平台、真实 Chromium/CDP、复杂 Docker 与所需 UI/平台验收仍由用户环境执行。
 > 协议以 `../taiyiflow-dev` 后端代码为准，后台适用行为参照 `../taiyiflow-electron`；前置运行时能力以 `plan-taiyiflowJavaSdk-roadmap.prompt.md` 已完成的 Phase G–Z 为基础。
 > 2026-11-14 本地验收：`./mvnw test` 全仓 401 个测试通过（32 + 210 + 82 + 9 + 57 + 11），`./mvnw package -DskipTests` 八个模块打包成功；这些结果不替代真实环境联调。
 
@@ -120,7 +120,7 @@ Electron 主进程与 Web 两条实现、`taiyiflow-dev` 的 AgentService 共同
 1. **浏览器技术方案**：拟使用 Playwright Java，新建独立 `taiyiflow-sdk-browser` 模块，将驱动依赖、浏览器二进制和生命周期隔离在可选模块中；core 不依赖 Playwright。该选型需批准后实施。
 2. **运行模式**：`DISABLED | HEADLESS | REMOTE_CDP`，默认 `DISABLED`。HEADLESS 由 SDK 管理完整浏览器生命周期；REMOTE_CDP 连接外部 Chromium，不接管用户既有浏览器。
 3. **浏览器版本**：首期只产品化 Chromium。保留 Electron 的 `taiyiflow-in-chrome__` 工具前缀和同一套工具名，HEADLESS/REMOTE_CDP 共用，不另造一套远程工具协议。
-4. **默认 Flow**：拟增加显式 `useServerDefaultFlow()` 绑定，与 `.flowId(...)` 互斥；不采用“缺少 flowId 就静默请求默认 Flow”的隐式行为。DigitalWorker 接到任务时仍要求任务 flowId 明确，禁止默认 Flow 把任务路由到错误智能体。
+4. **默认 Flow**：`.flowId(...)` 可选，未设置或 blank 时自动读取 `/config.default_flow_id`；保留显式 `useServerDefaultFlow()`，与 `.flowId(...)` 互斥。解析失败必须明确报错，不降级到任意 Flow。DigitalWorker 接到任务时仍要求任务 flowId 明确，禁止默认 Flow 把任务路由到错误智能体。
 5. **工具覆盖**：首期对齐 17 个实际浏览器操作工具；`set_browser_type` 在仅有 Chromium 产品化时不伪装支持多引擎，待确有 Firefox/WebKit 需求再单独实施。
 6. **网络安全**：默认限制 `file:`, `javascript:`, `data:` 等本地/脚本导航，仅允许 `http/https/about:blank`；内网、环回、链路本地与云元数据地址默认拦截，企业内网目标通过明确 allowlist 开放。远程浏览器还需部署侧网络出口策略，SDK 页面拦截不能冒充完整网络边界。
 7. **不引入第二权威**：浏览器标签、截图、Todo、控制台和临时文件都是会话瞬态状态；任务、结果、产物、审批与记忆仍以平台为权威。
@@ -132,7 +132,7 @@ Electron 主进程与 Web 两条实现、`taiyiflow-dev` 的 AgentService 共同
 
 | 阶段 | 优先级 | 内容 | 依赖 | 本地验收重点 |
 |------|--------|------|------|--------------|
-| **Phase AA** | P0 | 类型化 `/config` 与 Flow Metadata、默认 Flow 显式绑定、工具 schema/首帧过滤、通用同步/异步 FlowRunClient、workspace 与内置工具接线、流式上传 | Phase G–Z | 协议字段、per-flow 能力隔离、available_tools 按 features 过滤、原始响应、202/轮询/取消、上下文隔离 |
+| **Phase AA** | P0 | 类型化 `/config` 与 Flow Metadata、默认 Flow 自动回退、工具 schema/首帧过滤、通用同步/异步 FlowRunClient、workspace 与内置工具接线、流式上传 | Phase G–Z | 协议字段、per-flow 能力隔离、available_tools 按 features 过滤、原始响应、202/轮询/取消、上下文隔离 |
 | **Phase AB** | P0 | 文档/图片/音频/视频理解及截图理解公共服务 | AA | 双 Flow 调用链、tweaks、扩展名/大小限制、同步/异步结果、超时取消 |
 | **Phase AC** | P1 | Playwright Chromium 本地无头浏览器、17 个工具、会话隔离、截图理解、安全与资源生命周期 | AA；截图理解依赖 AB | Page/Context 隔离、工具契约、URL/文件安全、并发串行化、清理 |
 | **Phase AD** | P1 | 标准远程 CDP、外部实例归属、凭证脱敏、断连与资源语义 | AC | 不接管既有标签、不关闭外部 Browser、凭证不泄漏、断连不重放 |
@@ -158,8 +158,8 @@ Electron 主进程与 Web 两条实现、`taiyiflow-dev` 的 AgentService 共同
 6. 扩展 PluginManager 的工具定义注册：新增不可变 `ToolDefinition{name,description,input_schema}` 和 `register(definition,handler)`，内置工具同时注册 handler 与 schema；既有 `register(name,handler)` 保持可执行，但没有定义的 handler 不自动广告给模型。禁止用空 schema 或猜测参数伪造工具定义。
 7. `AgentSessionImpl` 在新 start 且调用方未显式提供清单时，从已注册 ToolDefinition 生成 `available_tools`，依次应用 enabled 配置、FlowMetadata features、requestMode/allowedTools 与本地只读静态分类；PermissionHook 仍在执行时独立生效。显式清单不得广告不存在的本地 handler；仅过滤本地内置理解工具，不影响 MCP 服务中的同名工具。
 8. Flow features 与子任务 `features{requested_skill_names,client_mcp_server_names}` 是不同协议：前者来自平台 FlowMetadata，后者是子任务能力快照。RunContext 可保存首帧工具定义快照，但不得把 FlowMetadata 全量复制进子任务 command_payload、workspace 或日志。
-9. `TaiyiAgent.Builder` 增加显式 `useServerDefaultFlow()`，与 `flowId()` 互斥。构建时使用同一 Base URL、认证和超时配置读取 `/config`，解析失败则构建失败并说明原因，不降级到任意 Flow。解析后的实际 flowId 可由 `getFlowId()` 观察。
-10. DigitalWorker 的派单路径继续保持 flowId 必填；只有应用/standalone 或 starter 明确配置 `use-default-flow=true` 时才走服务端默认值。默认值为 false，避免既有部署升级后路由变化。
+9. `TaiyiAgent.Builder` 的 `flowId()` 改为可选；未设置或 blank 时自动使用服务端默认 Flow，保留显式 `useServerDefaultFlow()` 且与 `flowId()` 互斥。构建时使用同一 Base URL、认证和超时配置读取 `/config`，解析失败则构建失败并说明原因，不降级到任意 Flow。解析后的实际 flowId 可由 `getFlowId()` 观察。
+10. DigitalWorker 的派单路径继续保持 flowId 必填；应用/standalone 与 starter 未配置 flowId/flow-id 时自动走服务端默认值，无需再显式配置 `use-default-flow=true`。
 11. 新增 core 内部/公共只读 `FlowRunClient`：
     - 同步 `run(flowId, request)` 调用 `POST /api/v1/run/{flow}`，返回 HTTP 状态、原始正文、media type、`session_id`、outputs 和响应 Session Header；文本响应不强制转 JsonNode。
     - 异步 `submitAsync()` 只接受后端 202 和有效 task_id；`poll()` 处理 pending/running/success/failed/cancelled；`cancel()` 使用对应任务端点。
@@ -398,7 +398,7 @@ Electron 主进程与 Web 两条实现、`taiyiflow-dev` 的 AgentService 共同
 
 真实环境验收至少包括：
 
-1. 不填业务 flowId 且显式启用默认模式时进入 `/config.default_flow_id`；未启用或 worker 派单缺 flowId 时明确失败。
+1. 不填业务 flowId/flow-id 时自动进入 `/config.default_flow_id`，显式 flowId 仍覆盖默认值；默认 Flow 缺失或解析失败时明确报错，worker 派单缺 flowId 时明确失败。
 2. 查询两个能力配置不同的 Flow，核对 metadata 的 id/owner_appid/features/knowledges 和实际首帧 available_tools；同会话 attach/resume 不漂移，跨 Flow 缓存不串用，metadata 故障时不得全量开放工具。
 3. 各选一种受支持文档、图片、音频、视频跑通上传与理解；检查实际调用的业务/理解 Flow、输出、平台工具结果与失败提示。
 4. 大文件边界、服务端不支持扩展名、理解 Flow 失败、异步取消和平台不可达；不得出现自动重交或本地伪造结果。
@@ -426,7 +426,7 @@ Electron 主进程与 Web 两条实现、`taiyiflow-dev` 的 AgentService 共同
 实施前请确认或调整以下决策：
 
 1. 是否批准 **Playwright Java + 独立 `taiyiflow-sdk-browser` 模块**。
-2. 是否接受默认业务 Flow 采用**显式 `useServerDefaultFlow()`**，且 worker 派单不回退默认 Flow。
+2. 是否接受默认业务 Flow 采用**flowId 缺省时自动回退**，保留显式 `useServerDefaultFlow()`，且 worker 派单不回退默认 Flow。
 3. 是否接受首期 **Chromium-only、17 个工具、`set_browser_type` 暂缓**。
 4. 是否接受远程浏览器只支持**标准 REMOTE_CDP**，不迁移 Electron Native Messaging/Chrome 扩展。
 5. 是否接受内网默认阻断、allowlist 开放，以及 execute_js/下载/文件选择器默认关闭的安全基线。

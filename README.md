@@ -73,7 +73,7 @@ taiyiflow-javasdk/
 TaiyiAgent agent = TaiyiAgent.builder()
     .baseUrl("http://localhost:8080")
     .apiKey("your-api-key")
-    .flowId("my-agent-flow")
+    .flowId("my-agent-flow") // 可选：省略时使用服务端默认 Flow
     .build();
 
 // 2. 发起会话 + 挂 StreamHook 接收流式回复
@@ -108,7 +108,7 @@ BuiltinPlugins.registerAll(
 ```bash
 export TAIYIFLOW_BASE_URL=http://localhost:8080
 export TAIYIFLOW_API_KEY=your-api-key
-export TAIYIFLOW_FLOW_ID=your-flow-id
+export TAIYIFLOW_FLOW_ID=your-flow-id  # 可选；缺省使用服务端默认 Flow
 
 ./mvnw -pl taiyiflow-sdk-examples -am compile exec:java \
     -Dexec.mainClass=io.taiyiflow.sdk.examples.MinimalExample
@@ -132,7 +132,7 @@ export TAIYIFLOW_FLOW_ID=your-flow-id
 TaiyiAgent agent = TaiyiAgent.builder()
     .baseUrl("http://localhost:8080")
     .apiKey("your-api-key")
-    .flowId("my-agent-flow")
+    .flowId("my-agent-flow") // 可选：省略时使用服务端默认 Flow
     // 工具执行拦截：接管特定工具的执行
     .onToolExecution(new ToolExecutionHook() {
         @Override

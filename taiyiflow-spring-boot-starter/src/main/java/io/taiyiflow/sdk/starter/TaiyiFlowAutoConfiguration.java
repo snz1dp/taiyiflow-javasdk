@@ -12,15 +12,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
-import org.springframework.boot.autoconfigure.condition.ConditionOutcome;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.boot.autoconfigure.condition.SpringBootCondition;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.ConditionContext;
-import org.springframework.context.annotation.Conditional;
-import org.springframework.core.type.AnnotatedTypeMetadata;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -31,7 +26,6 @@ import java.nio.file.Path;
 @AutoConfiguration
 @EnableConfigurationProperties(TaiyiFlowProperties.class)
 @ConditionalOnProperty(prefix = "taiyiflow", name = {"base-url", "api-key"})
-@Conditional(TaiyiFlowAutoConfiguration.FlowSelectionCondition.class)
 public class TaiyiFlowAutoConfiguration {
 
     private static final Logger log = LoggerFactory.getLogger(TaiyiFlowAutoConfiguration.class);
@@ -45,7 +39,8 @@ public class TaiyiFlowAutoConfiguration {
             ObjectProvider<PermissionHook> permissionHooks,
             ObjectProvider<SessionHook> sessionHooks) throws Exception {
         log.info("Auto-configuring TaiyiAgent with flow selection: {}",
-                properties.isUseDefaultFlow() ? "server-default" : properties.getFlowId());
+                properties.isUseDefaultFlow() || properties.getFlowId() == null || properties.getFlowId().isBlank()
+                        ? "server-default" : properties.getFlowId());
 
         TaiyiAgent.Builder builder = TaiyiAgent.builder()
                 .baseUrl(properties.getBaseUrl())
@@ -136,19 +131,6 @@ public class TaiyiFlowAutoConfiguration {
                 : Path.of(skills.getWorkspaceDir());
         return new io.taiyiflow.sdk.plugins.skill.SkillManager(workspace,
                 skills.getUserDir() == null ? null : Path.of(skills.getUserDir()), agent.skills());
-    }
-
-    static final class FlowSelectionCondition extends SpringBootCondition {
-        @Override
-        public ConditionOutcome getMatchOutcome(ConditionContext context, AnnotatedTypeMetadata metadata) {
-            String flowId = context.getEnvironment().getProperty("taiyiflow.flow-id");
-            boolean useDefault = context.getEnvironment().getProperty(
-                    "taiyiflow.use-default-flow", Boolean.class, false);
-            boolean explicitFlow = flowId != null && !flowId.isBlank();
-            return explicitFlow || useDefault
-                    ? ConditionOutcome.match("A flow id or the server default flow is configured")
-                    : ConditionOutcome.noMatch("Neither taiyiflow.flow-id nor taiyiflow.use-default-flow is enabled");
-        }
     }
 
 }

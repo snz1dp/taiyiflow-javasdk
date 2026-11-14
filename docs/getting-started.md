@@ -68,7 +68,7 @@ cd taiyiflow-javasdk
 ```bash
 export TAIYIFLOW_BASE_URL=http://localhost:8080   # 平台地址
 export TAIYIFLOW_API_KEY=your-api-key             # API 密钥（API Key）
-export TAIYIFLOW_FLOW_ID=your-flow-id             # 智能体标识（flow ID）
+export TAIYIFLOW_FLOW_ID=your-flow-id             # 可选；缺省使用服务端默认 Flow
 ```
 
 ## 最简示例
@@ -80,7 +80,7 @@ import io.taiyiflow.sdk.hooks.StreamHook;
 
 public class Demo {
     public static void main(String[] args) throws Exception {
-        // 1. 创建智能体实例（绑定一个 flow）
+        // 1. 创建智能体实例（flowId 可省略，缺省使用服务端默认 Flow）
         TaiyiAgent agent = TaiyiAgent.builder()
                 .baseUrl(System.getenv("TAIYIFLOW_BASE_URL"))
                 .apiKey(System.getenv("TAIYIFLOW_API_KEY"))

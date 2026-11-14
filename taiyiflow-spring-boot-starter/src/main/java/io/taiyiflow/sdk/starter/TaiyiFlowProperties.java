@@ -23,7 +23,7 @@ public class TaiyiFlowProperties {
     private String apiKey;
 
     /**
-     * Flow ID or name to bind to.
+     * Optional Flow ID or name; defaults to the server default Flow.
      */
     private String flowId;
 
