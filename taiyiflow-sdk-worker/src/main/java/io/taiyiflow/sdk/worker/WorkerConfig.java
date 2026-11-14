@@ -55,7 +55,7 @@ public record WorkerConfig(
             browser = browser == null ? new Browser(null, null, null, null, null, null, null, null, null,
                     null, null, null, null) : browser;
             skills = skills == null ? new Skills(false, false, null, null, null, List.of(), List.of(),
-                    false, null) : skills;
+                    true, null) : skills;
         }
     }
 
@@ -67,7 +67,11 @@ public record WorkerConfig(
 
     public record Skills(boolean enabled, boolean platformEnabled, Path workspaceDir, Path userDir,
                          Path compatDir, List<String> defaultNames, List<String> bundledResources,
-                         boolean toleratePlatformFailure, String syncMode) { }
+                         Boolean toleratePlatformFailure, String syncMode) {
+        public Skills {
+            toleratePlatformFailure = toleratePlatformFailure == null ? Boolean.TRUE : toleratePlatformFailure;
+        }
+    }
 
     public enum AuthType {
         API_KEY,

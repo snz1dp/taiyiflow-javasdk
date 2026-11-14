@@ -10,6 +10,8 @@ import java.nio.file.Path;
 import java.time.Duration;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class WorkerConfigLoaderTest {
 
@@ -69,5 +71,28 @@ class WorkerConfigLoaderTest {
         assertEquals("example.IamWorkerRegistrar", loaded.extensions().workerRegistrar());
         assertEquals("example.BusinessTaskHandler", loaded.extensions().taskHandler());
         assertEquals("example.BusinessTaskReporter", loaded.extensions().taskReporter());
+        assertTrue(loaded.tools().skills().toleratePlatformFailure());
+    }
+
+    @Test
+    void defaultsAndOverridesPlatformFailureTolerance(@TempDir Path directory) throws Exception {
+        Path omitted = directory.resolve("omitted.yml");
+        Files.writeString(omitted, """
+                tools:
+                  skills:
+                    enabled: true
+                """);
+        Path explicitFalse = directory.resolve("explicit-false.yml");
+        Files.writeString(explicitFalse, """
+                tools:
+                  skills:
+                    enabled: true
+                    tolerate-platform-failure: false
+                """);
+
+        WorkerConfigLoader loader = new WorkerConfigLoader();
+
+        assertTrue(loader.load(omitted).tools().skills().toleratePlatformFailure());
+        assertFalse(loader.load(explicitFalse).tools().skills().toleratePlatformFailure());
     }
 }
