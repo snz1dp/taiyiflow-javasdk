@@ -116,6 +116,24 @@ const config = defineConfig({
   mermaid: {
     // mermaid 初始化配置
     theme: 'default'
+  },
+
+  vite: {
+    optimizeDeps: {
+      // mermaid 的 ESM 入口以 default import 引入 fastdom（UMD/CJS），
+      // dev 模式下必须显式预构建做 CJS→ESM 互操作，否则浏览器报
+      // "does not provide an export named 'default'" 导致整站白屏。
+      // 注意：这里必须整体覆盖 withMermaid 注入的默认 include 列表——
+      // 它包含 mermaid@11.17 已不再依赖的 debug，会导致预构建失败。
+      include: [
+        'fastdom',
+        'fastdom/extensions/fastdom-promised.js',
+        '@braintree/sanitize-url',
+        'dayjs',
+        'cytoscape',
+        'cytoscape-cose-bilkent'
+      ]
+    }
   }
 })
 
