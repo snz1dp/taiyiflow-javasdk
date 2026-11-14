@@ -1,6 +1,6 @@
 # TaiyiFlow Java Agent SDK
 
-> 面向 Java 后台的数字人运行时与智能体能力 SDK——`DigitalWorker` 可常驻接活、请示和回报，`TaiyiAgent` 可主动发起多会话并行执行，扩展统一通过 Hook 完成。
+> 面向 Java 后台的数字人运行时与智能体能力 SDK——`DigitalWorker` 可常驻接活、请示和回报，`TaiyiAgent` 可主动发起多会话并行执行，业务扩展统一通过 Hook 完成。
 
 ## 定位
 
@@ -10,65 +10,62 @@
 |------|-------|-------------------|
 | 场景 | 浏览器应用嵌入聊天窗口 | Java 后台程序主动驱动智能体 |
 | 调用方 | 前端页面 | 服务端 / CLI / 微服务 |
-| 扩展方式 | 插件注册 | **Hook 机制**（唯一扩展面） |
+| 扩展方式 | 插件注册 | **Hook 机制**（TaiyiAgent）+ **Worker SPI**（DigitalWorker） |
 | 会话模型 | 单会话 | **多会话并行**（虚拟线程） |
 
 ### 核心原则
 
-1. **客户端协同 WS 是可选插件**：默认不建立被动长连接；仅当需要"平台反向下发任务"时启用 `CollaborationPlugin`。
-2. **多会话并行**：一个 `TaiyiAgent` 实例绑定一个智能体，内部 `SessionManager` 管理多个并发 `AgentSession`，会话间隔离、可各自中断。
-3. **Hook 是唯一扩展面**：调用者按需挂 Hook，不挂则走内置默认行为。
+1. **客户端协同 WS 是可选能力**：默认不建立被动长连接；仅当需要"平台反向下发任务"时启用协同（`Builder.enableCollaboration()` 或 `DigitalWorker`）。
+2. **多会话并行**：一个 `TaiyiAgent` 实例绑定一个智能体（flow），内部 `SessionManager` 管理多个并发 `AgentSession`，会话间隔离、可各自中断。
+3. **Hook 是 TaiyiAgent 的唯一业务扩展面**：调用者按需挂 Hook，不挂则走内置默认行为；DigitalWorker 的身份登记/校验与任务接入走 Worker SPI，由使用方实现。
+4. **平台是权威**：记忆、任务状态、工具结果、检查点与审批回执以平台为准；本地只保存最小执行状态与瞬态补传 Outbox。
 
 ### 不做的事
 
 - UI / 前端渲染
 - 语音 dialogue 链路
 - LLM 编排（大脑仍在平台侧）
+- workerId 登记（由第三方身份系统承担，SDK 不自注册）
 
-## 架构总览
+## 模块结构
 
 ```
 taiyiflow-javasdk/
-├── api/                          # 对外门面
-│   ├── TaiyiAgent.java           # 智能体实例：builder 创建，绑定 flow + token
-│   ├── AgentSession.java         # 一次会话执行：chat() 返回消息流，可中断
-│   └── hooks/                    # Hook SPI（全部可选实现）
-│       ├── StreamHook            # 消息流输出：onChunk/onEvent/onError/onClose
-│       ├── ToolExecutionHook     # 工具执行拦截：before/after/takeover(接管)
-│       ├── PermissionHook        # 敏感操作审批：onPermission(allow/deny/ask)
-│       └── SessionHook           # 会话生命周期：onStart/onFinish/onInterrupt
-├── core/
-│   ├── session/                  # SessionManager：多会话并行（虚拟线程池+注册表）
-│   ├── dispatch/                 # ToolDispatcher：工具调用统一入口，串接 Hook 链
-│   ├── plugin/                   # Plugin SPI + PluginManager（内置/自定义工具注册）
-│   ├── lifecycle/                # LifecycleManager：实例启停、优雅关闭
-│   └── state/                    # 会话状态机（RUNNING/STREAMING/TOOL_CALLING/DONE）
-├── transport/
-│   ├── stream/                   # 流式运行（主通道）：WS 双向 + SSE 回退
-│   ├── rest/                     # REST 客户端（会话/消息/技能/记忆查询）
-│   └── envelope/                 # 消息封套模型 + 事件常量
-├── capabilities/                 # 内置插件（默认注册，可移除）
-│   ├── shell/                    # ShellPlugin：ProcessBuilder
-│   ├── files/                    # FilePlugin：读写/细粒度编辑
-│   ├── search/                   # SearchPlugin：文本/正则搜索
-│   ├── skills/                   # SkillPlugin：技能注册与同步
-│   └── tools/                    # 自定义 ToolHandler 注册入口
-├── collaboration/                # 可选插件（默认不启用）
-│   ├── CollaborationPlugin       # 协同 WS 被动模式：接收平台下发任务
-│   └── SchedulePlugin            # 定时任务回调（依赖协同连接）
-├── worker/                       # 数字人运行时：身份、任务执行、平台回报与恢复对账
-└── spring-boot-starter/          # 自动装配：逐插件/Hook 开关
+├── taiyiflow-sdk-core/            # 核心：门面、Hook SPI、会话管理、工具分发、传输层、MCP、子任务编排
+├── taiyiflow-sdk-plugins/         # 内置工具插件：Shell（含后台进程）、File、Search、工作区审计
+├── taiyiflow-sdk-collaboration/   # 协同 WS 插件（零 core 依赖，可独立使用）：CollaborationPlugin、SchedulePlugin
+├── taiyiflow-sdk-worker/          # 数字人运行时：DigitalWorker、任务执行与对账、认证、worker.yml 容器入口
+├── taiyiflow-spring-boot-starter/ # Spring Boot 3 自动装配：TaiyiAgent 与 DigitalWorker
+└── taiyiflow-sdk-examples/        # 7 个可运行示例
 ```
+
+依赖方向：`collaboration` 不依赖 core；`core` 依赖 `collaboration`；`plugins`/`worker`/`starter` 依赖 `core`。
 
 ## 快速开始
 
 ### 环境要求
 
-- Java 17+；使用虚拟线程运行时需要 Java 21+
+- Java 17+（源码与编译基线）；**运行需要 Java 21+**（会话与任务执行使用虚拟线程）
 - 无需本机安装 Maven，使用仓库内 `./mvnw`
 - 可访问的 TaiyiFlow 后端服务
 
-### 最简示例（3 行代码跑通流式对话）
+### 引入依赖
+
+```xml
+<dependency>
+    <groupId>io.taiyiflow</groupId>
+    <artifactId>taiyiflow-sdk-core</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+</dependency>
+<!-- 需要本地工具执行时再引入 -->
+<dependency>
+    <groupId>io.taiyiflow</groupId>
+    <artifactId>taiyiflow-sdk-plugins</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+</dependency>
+```
+
+### 最简示例（流式对话）
 
 ```java
 // 1. 创建智能体实例
@@ -93,13 +90,30 @@ session.await();
 agent.shutdown();
 ```
 
-### 环境变量（示例程序）
+### 注册本地工具插件
+
+`TaiyiAgent` 默认不注册任何本地工具。需要执行 shell/文件/搜索工具时，显式注册内置插件：
+
+```java
+BuiltinPlugins.registerAll(
+    agent.getPluginManager(),
+    Path.of("/tmp/taiyiflow-sandbox"),          // 沙盒根目录
+    List.of("ls", "cat", "echo"));              // shell 命令白名单（首 token 精确匹配）
+// 只读场景：BuiltinPlugins.registerReadOnly(pm, sandboxRoot)
+```
+
+### 运行示例
 
 ```bash
-export TAIYIFLOW_BASE_URL=https://api.taiyiflow.io
+export TAIYIFLOW_BASE_URL=http://localhost:8080
 export TAIYIFLOW_API_KEY=your-api-key
 export TAIYIFLOW_FLOW_ID=your-flow-id
+
+./mvnw -pl taiyiflow-sdk-examples -am compile exec:java \
+    -Dexec.mainClass=io.taiyiflow.sdk.examples.MinimalExample
 ```
+
+示例清单见 [docs/examples.md](docs/examples.md)。
 
 ### 挂 Hook 定制行为
 
@@ -148,10 +162,7 @@ taiyiflow:
   api-key: ${TAIYIFLOW_API_KEY}
   flow-id: my-agent-flow
   sandbox-root: /tmp/taiyiflow-sandbox
-  allowed-shell-commands:
-    - ls
-    - cat
-    - echo
+  allowed-shell-commands: [ls, cat, echo, date, whoami, pwd]
   plugins:
     shell: true
     files: true
@@ -165,126 +176,69 @@ taiyiflow:
     workspace: /var/lib/taiyiflow/worker
     concurrency: 3
     approval-channel: PLATFORM
-  recovery-policy: MANUAL       # MANUAL / AUTO
-  recovery-min-backoff: 2s
-  recovery-max-backoff: 60s
-  recovery-max-attempts: 8
-  auto-restart-on-execution-loss: true
-  permission-timeout: 300s      # 0 表示永不超时，非零范围为 10–6000 秒
 ```
 
-自动装配后可直接注入 `TaiyiAgent`：
-
-```java
-@Service
-public class MyService {
-    private final TaiyiAgent agent;
-
-    public MyService(TaiyiAgent agent) {
-        this.agent = agent;
-    }
-
-    public void chat(String message) {
-        agent.newSession().onStream(...).chat(message);
-    }
-}
-```
-
-启用 `taiyiflow.worker.enabled` 时，必须提供 `WorkerIdentityValidator` Bean。默认复用 `taiyiflow.api-key`，也可注册 `WorkerAuth` Bean 使用 JWT 或 persistentToken；业务任务注册 `WorkerTaskHandler`，平台审批注册名为 `workerApprovalHandler` 的 `PermissionHook`，本地审批审计注册 `ApprovalAudit`，观测扩展注册 `WorkerHook`。`auto-start=false` 只装配不连接，便于测试或由应用自行控制生命周期。
+`base-url` / `api-key` / `flow-id` 三键齐备才装配 `TaiyiAgent` Bean，可直接注入使用；四类 Hook Bean 会被自动挂载。启用 `taiyiflow.worker.enabled=true` 时必须提供 `WorkerIdentityValidator` Bean。完整配置键见 [docs/spring-boot.md](docs/spring-boot.md)。
 
 ## Hook 体系
 
-所有扩展点收敛为 Hook 机制，调用者按需挂载：
+所有 TaiyiAgent 业务扩展点收敛为 4 个 Hook，可在 Builder（全局）或会话（单会话）上挂载：
 
 | Hook | 接口方法 | 默认行为（不挂时） |
 |------|---------|-------------------|
-| `StreamHook` | `onChunk` / `onEvent` / `onError` / `onClose` | 消息流内部缓冲，`chat()` 返回完整结果 |
+| `StreamHook` | `onChunk` / `onEvent` / `onError` / `onClose` | 消息流内部缓冲 |
 | `ToolExecutionHook` | `before` / `after` / `takeover` | 内置插件直接执行 |
-| `PermissionHook` | `onPermission` → allow / deny / ask | 只读放行，写操作拦截 |
+| `PermissionHook` | `onPermission` → ALLOW / DENY / ASK | 按 `PermissionPolicy` 决策（默认 READONLY：只读放行、写操作拒绝） |
 | `SessionHook` | `onStart` / `onFinish` / `onInterrupt` | 无额外行为 |
 
-### Hook 执行顺序（工具调用场景）
+工具调用时的执行顺序：
 
 ```
 智能体发起工具调用
     │
     ▼
-PermissionHook.onPermission()
-    │ allow
+PermissionHook.onPermission()      ← PermissionPolicy + 自定义 Hook
+    │ ALLOW
     ▼
-ToolExecutionHook.before()
+ToolExecutionHook.before()         ← 返回 null 取消执行
     │
     ▼
 ToolExecutionHook.takeover() ──→ 非空？──→ 返回调用者结果
-    │ empty                              │
+    │ null                               │
     ▼                                    │
-内置插件执行                              │
+内置插件执行（ToolRuntime 调度）          │
     │                                    │
     ▼                                    ▼
 ToolExecutionHook.after() ◄──────────────┘
     │
     ▼
-结果回传智能体
+结果经 REST 回传智能体
 ```
 
-## 后台进程
+详见 [docs/hooks.md](docs/hooks.md)。
 
-Shell 工具在原有命令白名单和沙盒校验后支持 `background: true`，返回 SDK 私有 `process_handle`。配套工具为 `process_list`、`process_output`、`process_stop` 和 `process_cleanup`；句柄只属于当前插件实例和会话，不是平台 taskId 或 OS PID。
+## 执行控制与恢复
 
-- `process_output` 分别按 `stdout_offset` / `stderr_offset` 返回增量数据、`next_offset`、`dropped_chars` 和 `offset_reset`；每个流保留 64 KiB 尾部，达到上限仍持续 draining。
-- `process_stop` 只停止注册表内匹配的进程树；`process_cleanup` 只清除已结束记录。跨会话、未知或进程重启后的旧句柄返回 `unknown_or_lost`，不会按旧 PID 执行 kill，也不会重启原命令。
-- 会话取消、agent/worker 停机会清理后台进程；暂停和恢复不会将其终止。进程表仅保存在内存，不写入结果 Outbox，启用工作区扫描时会在进程退出后补扫产物。
-
-## Stdio MCP
-
-除 Streamable HTTP 的 `McpToolClient` 外，SDK 提供 `StdioMcpManager` 托管本地 MCP 子进程。配置可由后端 `command` / `args` / `env` 对象、`stdio://command arg...` 或 base64/percent 编码的 JSON data URI 创建；`stdio://` 与后端一致，仅按 Unicode 空白拆分，不执行 shell，也不解释引号或转义。
+`AgentSession` 提供完整的执行控制面：
 
 ```java
-StdioMcpPolicy policy = StdioMcpPolicy.builder(workspace)
-    .allowCommand("python3")
-    .allowEnvironment("MCP_SERVER_TOKEN")
-    .build();
-StdioMcpManager stdio = new StdioMcpManager(policy, Duration.ofSeconds(30));
-StdioMcpServerConfig config = StdioMcpServerConfig.of(
-    "python3", List.of("-u", "server.py"), Map.of("MCP_SERVER_TOKEN", token));
-stdio.registerTools("local", config, agent.getPluginManager());
-```
-
-工具仍以 `c_{server}_{tool}` 注册并经过统一的权限、Hook、并发与取消链。默认不允许任何命令或显式环境变量；进程环境默认仅继承 `HOME`、`LOGNAME`、`PATH`、`SHELL`、`TERM`、`USER`，可用 `inheritedEnvironment(...)` 进一步收敛。`cwd` 必须位于 workspace 内，server 数量、参数、协议帧、输出尾部和进程寿命均有上限。
-
-相同规范化配置并发首次调用只启动一个进程。stdout 仅接受换行分隔的 JSON-RPC，支持跨 chunk 响应和请求 ID 关联；超时、取消、进程异常退出及关闭都会清理 pending 请求。工具取消不会隐式重放 `tools/call`，agent/worker 停机会关闭全部 MCP 子进程。敏感 env 只保存在配置与进程内存中，不写入 state-dir、能力快照或日志。
-
-## 执行控制、恢复与审批
-
-`pause()` / `cancel()` 调用服务端控制接口；`attach()` 重接仍在执行的原 run，`resume()` 通过服务端检查点恢复。两者都不会主动创建新执行。
-
-```java
-session.pause();
-session.resume();                 // 自动发现并恢复可续跑检查点；重接活跃 run 可改用 attach()
-session.await();
-
+session.pause();                  // 服务端暂停当前 run
+session.resume();                 // 自动发现并恢复可续跑检查点
+session.attach();                 // 重接仍在执行的原 run（不创建新执行）
+session.cancel();                 // 服务端取消
 session.retry();                  // 新 run：已持久化时续做，未持久化时重发原输入
-session.await();
 session.repeat();                 // 新 run：复用原始 input/tweaks/files/requestType
-session.await();
+session.interrupt();              // 仅本地中断
+
+boolean ok = session.approve(toolCallId);          // PermissionHook 返回 ASK 后的人工裁决
+boolean no = session.deny(toolCallId, "reason");
 ```
 
-断线恢复默认 `MANUAL`。设置 `.recoveryPolicy(RecoveryPolicy.AUTO)` 后，SDK 按退避策略依次对账并选择 attach、checkpoint resume；只有确认原执行丢失且不存在 waiting/pending/uncertain 工具副作用时，才允许自动 start。状态未知或平台不可达时不会盲目重发。可通过 `recoveryBackoff(min, max)`、`recoveryMaxAttempts(n)` 和 `autoRestartOnExecutionLoss(boolean)` 调整行为。
+断线恢复默认 `MANUAL`；设置 `.recoveryPolicy(RecoveryPolicy.AUTO)` 后按退避策略依次 attach → checkpoint resume，只有确认原执行丢失且无不确定工具副作用时才自动 start。详见 [docs/execution-control.md](docs/execution-control.md)。
 
-`PermissionHook` 返回 `ASK` 时，工具调用进入会话级审批等待，由调用者裁决：
+## 数字人（DigitalWorker）
 
-```java
-boolean accepted = session.approve(toolCallId);
-boolean rejected = session.deny(toolCallId, "not allowed");
-```
-
-批准后才执行工具；拒绝或超时形成失败结果并通过 REST 回传。默认审批超时为 300 秒，`permissionTimeout(Duration.ZERO)` 表示永不超时，其他有效值为 10–6000 秒。重复或未知回执返回 `false`。未确认的工具结果仅保存在进程内存中：attach 前补偿重报，resume 时随检查点提交，不写入本地权威结果库。
-
-完整示例见 `PauseResumeExample`、`RetryRepeatExample` 和 `LocalApprovalExample`。
-
-## 数字人任务执行与平台结果
-
-`DigitalWorker` 在协同连接上接收 `remote_task`、`dialogue_subtask` 和定时任务。未配置 `.onTask(...)` 时，这些任务默认路由到对应 flow 的 `AgentSession`；同一 flow + session 串行执行，结果中的 `session_id`、`run_id` 和文本通过平台任务或定时任务 REST 接口回报。自定义 `.onTask(...)` 始终优先。
+`DigitalWorker` 在协同连接上接收 `remote_task`、`dialogue_subtask` 和定时任务，默认路由到对应 flow 的 `AgentSession` 执行，结果通过平台 REST 回报：
 
 ```java
 DigitalWorker worker = DigitalWorker.builder()
@@ -292,190 +246,107 @@ DigitalWorker worker = DigitalWorker.builder()
     .auth(WorkerAuth.apiKey(apiKey))
     .identity(WorkerIdentity.of("worker-1", "后端数字员工"))
     .workspace(Path.of("/var/lib/taiyiflow/worker"))
-    .stateDir(Path.of("/var/lib/taiyiflow/runtime-state")) // 独立瞬态 Outbox 持久目录
-    .identityValidator(thirdPartyIdentityValidator) // 必须连接第三方身份登记与绑定校验
-    .approvalHandler(platformApprovalHandler)     // 默认 PLATFORM 通道的适配器
+    .stateDir(Path.of("/var/lib/taiyiflow/runtime-state")) // 瞬态 Outbox 持久目录
+    .identityValidator(thirdPartyIdentityValidator)        // 必填：第三方身份校验
+    .approvalHandler(platformApprovalHandler)              // PLATFORM 审批通道适配器
     .build();
 worker.start();
 ```
 
-### 受控子任务
+要点：
 
-`DigitalWorker` 为默认智能体会话注册 `run_subtask`，支持单 prompt 和 `subtasks` 批量。每个子任务先通过 `POST /api/v1/agents/client/collaborations` 创建平台记录，再按目标投递；`local_default` 本机任务也复用 `TaskExecutor` 的 running 前置确认、取消、终态回报和重启对账，不以本地返回值替代平台状态。当前只支持 `wait_for_completion=true`，不支持 detached 子任务。
+- **身份由第三方治理**：`WorkerIdentityValidator` 必填；workerId 可预置（`identity`）或经 `WorkerRegistrar` 向第三方系统注册，SDK 不自注册。
+- **认证**：`WorkerAuth.apiKey(...)` / `jwt(...)` / `persistentToken(...)`；持久令牌只能放独立加密 `CredentialStore`（AES-256-GCM），401 按认证代次合并换牌、每操作最多重试一次。
+- **可靠性**：先回报 running 再执行；回报失败进入 `REPORT_UNKNOWN` 只补传不重跑；重连后 `tasks.fetch_recent` 对账，仅明确 pending 的任务自动执行。
+- **受控子任务**：内置 `run_subtask` 工具，支持单 prompt 与批量、模式降级（agent → plan → ask）、能力快照冻结与 MCP 配置按名解析。
+- **单实例容器**：同一 workerId 只部署一个副本，`make image` 构建非 root 镜像，业务适配器 JAR 挂载 `/app/lib`。
 
-子任务 `request_mode` 缺省继承父级，只能保持或降低为 `agent → plan → ask`，非法显式值和提权都会拒绝。发布时冻结 tools、requested skills、MCP server 名称及 reasoning/search/knowledge 配置；快照不包含 MCP env、URL 凭证或访问令牌。接收端按名称通过 SPI 获取当前身份可用的 MCP 配置，并再次过滤 resolver 返回值，配置只在内存中进入子请求：
-
-```java
-DigitalWorker worker = DigitalWorker.builder()
-    // ...baseUrl/auth/identity/workspace/identityValidator 等必填配置
-    .subtaskMcpResolver((flowId, serverNames) ->
-        mcpRegistry.configsFor(flowId, serverNames)) // 返回 ObjectNode：serverName -> 后端 MCP 配置
-    .build();
-```
-
-`ask`/`plan` 模式在 Hook 和 takeover 前拒绝写工具，未列入 `available_tools` 的工具同样直接失败。批量结果按输入索引聚合，单项失败不会抹掉其他结果；任务数量、并行度和等待时间有界。父运行取消或超时先调用平台取消（携带 `request_id` 和 `expected_version`），再补充本机取消；创建响应丢失时先按父 run、幂等键和 child 标识查询平台，不直接重复创建。
-
-也可以直接使用配置化入口。`deploy/worker.yml` 提供完整示例，密钥只配置环境变量名称：
-
-```bash
-./mvnw -pl taiyiflow-sdk-worker -am package
-java -cp 'taiyiflow-sdk-worker/target/*-all.jar:build/adapters/*' \
-  io.taiyiflow.sdk.worker.DigitalWorkerMain --config deploy/worker.yml
-```
-
-`extensions.identity-validator` 必须指向业务接入方实现的第三方身份登记与绑定校验类；任务、审批和指标分别通过 `task-handler`、`approval-handler`、`approval-audit`、`hooks` 注入。`WorkerHook` 提供 ready、任务开始/结束、错误和停止事件，可接日志、指标或追踪系统。配置路径也可通过 `TAIYIFLOW_WORKER_CONFIG` 或 `taiyiflow.worker.config` 指定。
-
-workerId、角色和能力必须由第三方身份实现登记并绑定认证主体，智能体 Agent 后台不承担 workerId 登记，SDK 也不自动注册。认证可使用 `WorkerAuth.apiKey(...)`、`WorkerAuth.jwt(...)`，或 `WorkerAuth.persistentToken(...)`；持久令牌只能放入独立加密 `CredentialStore`，不能写入普通 workspace。所有长期流式连接都会读取最新 accessToken，401 换牌按认证代次合并，每个操作最多重试一次。
-
-`state-dir` 与 workspace、凭证目录分离，仅保存有界的工具结果与 checkpoint 瞬态 Outbox，用于重启后的补传；补传不会重新执行工具或任务。未配置时使用内存 Outbox，进程退出后未确认记录会丢失。`outbox.max-entries`、`max-entry-bytes`、`max-total-bytes` 和 `max-retries` 控制容量与重试上限，冲突或损坏记录进入死信/隔离并通过 `WorkerHook.onError("report-outbox", ...)` 告警。
-
-### 任务可靠性与恢复
-
-- `TaskExecutor` 先成功回报 running 才执行任务，避免平台未接收状态时产生副作用；成功/失败回报失败会进入 `REPORT_UNKNOWN`，不会通过重跑任务补救。
-- 重连后通过 `tasks.fetch_recent` 分页补拉。只有平台明确为 `pending` 且未取消的任务会自动执行；`dispatched`、`acknowledged`、`running` 只对账，不重放；平台终态用于校正本地状态。
-- 同一 workerId 只部署一个容器副本，由容器平台负责心跳检测、故障摘除和快速拉起。SDK 不实现主备、选举或 fencing 协议。
-- 进程内的会话断线按 attach → checkpoint resume → 明确执行丢失后的安全 start 恢复。容器重启后的跨进程恢复仍以平台任务、run/checkpoint 和已接收结果为权威；缺少关联或状态不明时保持 `REPORT_UNKNOWN`，等待人工处理，不盲目重放。
-- 原 taskId 关联新 runId 的自动重建、跨实例执行接管和审批断点恢复依赖 P-RECOVERY、P-RESULT、P-APPROVAL 后端能力；当前单元测试不代替真实平台联调。
-
-### 记忆、产物与审批
-
-`worker.memories()` 和 `worker.files()` 使用平台 REST 接口，并统一支持 401 换牌重试。本地产物通过 `worker.uploadArtifact(flowId, sessionId, path)` 上传；workspace 只保存 instance_id、最小运行标识和临时文件，不保存权威业务结果、工具结果或长期任务历史。
-
-审批默认使用 `ApprovalChannel.PLATFORM`，写操作进入审批，只读操作直接放行。平台通道需要显式 `approvalHandler` 对接真实审批服务，未配置时需要审批的工具会失败关闭。使用 `LOCAL_CALLBACK` 时必须同时配置 `approvalAudit`，本地 ALLOW/DENY 只有在平台审计完成后才返回工具执行链。
-
-底层协同插件的任务幂等执行与平台回报示例见 `CollaborationExample`。
-
-### 单实例容器
-
-根目录 `Dockerfile` 构建非 root 的可执行 Worker 镜像，业务适配器 JAR 挂载到 `/app/lib`。本地执行 `make image` 构建镜像，`make test` / `make build` 运行测试和打包；`BUILD.yaml` 提供 linux/amd64 与 linux/arm64 发布描述，可通过 `make docker`、`make package`、`make publish` 调用 `snz1dpctl`。部署手册见 `deploy/single-instance-container.md`，示例配置见 `deploy/worker.yml`。同一 workerId 只允许一个副本，更新使用 Recreate，进程退出由容器平台快速拉起；不要把容器重启等同于已完成任务恢复，仍需按平台状态对账。
+详见 [docs/digital-worker.md](docs/digital-worker.md) 与 [docs/deployment.md](docs/deployment.md)。
 
 ## 传输协议
 
-### 流式运行（主通道）
+- **流式运行（主通道）**：WS `/api/v1/run/{flow_id}/websocket` 或 SSE `POST /api/v1/run/{flow_id}/stream`；默认 `StreamProtocol.AUTO`，由服务端 `/api/v1/config` 的 `stream_protocol` 决定，可显式覆盖；WS 不可用时可回退 SSE（`sseFallbackEnabled` 默认 true）。
+- **首帧**：连接后 10s 内发送 `ChatRequest`（input_value/session_id/tweaks/...）；消息正文在 `data.chunk`。
+- **工具调用**：流内 `client_tool` / `mcp_tool` / `built_in` 事件；结果回传走 REST `POST /api/v1/agents/client/call/result`（首帧后服务端不再读 WS）。
+- **协同 WS**：`/api/v1/agents/client/websocket`，`{type,event,payload}` 封套，`connection.ready` 后收任务。
+- **鉴权**：REST 用 `Authorization: Bearer`；WS 用 query `__TOKEN__`。
 
-- **协议**：WebSocket 双向（`WS /api/v1/run/{flow_id}/websocket`）
-- **首条消息**：连接后 10s 内发送 `{input_value, session_id, tweaks}`
-- **服务端推送**：`{"event": "message|heartbeat|error|close|custom", "data": {...}}`
-- **关闭码**：1000（正常）/ 4001 / 4002 / 4003 / 4004 / 4009
-- **SSE 回退**：`POST /run/{id}/stream`
+事件类型（11 种）与关闭码见 [docs/protocol.md](docs/protocol.md)。
 
-### 多会话并行
+## 内置插件与 MCP
 
-一个 `TaiyiAgent` 实例可并发多个 `AgentSession`，每个会话对应一条独立 WS 连接（独立 `session_id`），基于虚拟线程实现，会话间完全隔离。
+| 插件 | 工具 | 说明 |
+|------|------|------|
+| `ShellPlugin` | `shell`/`bash`/`execute_command`、`process_list`/`process_output`/`process_stop`/`process_cleanup` | 白名单 + 工作目录校验；前台 30s 超时；后台进程句柄隔离、每流 64Ki 字符尾部缓冲 |
+| `FilePlugin` | `read_file`、`write_file`、`file_edit`、`list_files` | 沙盒路径校验、原子写、`file_edit` 带 PATCH_CONFLICT 冲突协议 |
+| `SearchPlugin` | `search`、`grep` | 字面量/正则搜索，100 条截断 |
 
-### REST 辅助面
-
-- `/agents/*`：会话/消息/技能/记忆查询
-- `/client-collaboration-manager`：协同管理（可选）
-- `/client-schedule-manager`：定时任务管理（可选）
-- `/config`：配置查询
-
-## 内置插件
-
-| 插件 | 功能 | 默认状态 |
-|------|------|---------|
-| `ShellPlugin` | 执行 Shell 命令（ProcessBuilder） | 启用（工作目录 + 白名单） |
-| `FilePlugin` | 文件读写、细粒度编辑 | 启用 |
-| `SearchPlugin` | 文本/正则搜索 | 启用 |
-| `SkillPlugin` | 技能注册与同步 | 启用 |
-| `CustomToolHandler` | 自定义工具注册入口 | 按需 |
-
-`ShellPlugin` 的工作目录不是操作系统级文件系统沙盒；应按最小权限配置命令白名单。文件路径隔离由 `FilePlugin` 和 `SearchPlugin` 提供。
-
-## 可选插件
-
-| 插件 | 功能 | 启用方式 |
-|------|------|---------|
-| `CollaborationPlugin` | 接收平台反向下发任务（无头 CLI 模式） | `agent.enableCollaboration()` |
-| `SchedulePlugin` | 定时任务回调 | 依赖 CollaborationPlugin |
+MCP 支持两种形态：Streamable HTTP（`McpToolClient`）与本地 stdio 子进程（`StdioMcpManager` + `StdioMcpPolicy` 命令/env 白名单）。工具统一以 `c_{server}_{tool}` 注册，经过同一条权限、Hook、并发与取消链。详见 [docs/plugins.md](docs/plugins.md) 与 [docs/mcp.md](docs/mcp.md)。
 
 ## 技术选型
 
 | 维度 | 选择 | 理由 |
 |------|------|------|
-| Java 版本 | 17+；虚拟线程运行需 21+ | 后台多会话与任务并行 |
-| 构建 | Maven 多模块 | 标准企业级 |
-| JSON | Jackson | 生态成熟 |
+| Java 版本 | 17+ 编译；运行需 21+ | 虚拟线程支撑多会话与任务并行 |
+| 构建 | Maven 多模块 + Wrapper | 标准企业级，无需本机 Maven |
+| JSON | Jackson 2.17 | 生态成熟 |
 | WebSocket | `java.net.http.WebSocket` | JDK 内置，零额外依赖 |
 | 并行 | 虚拟线程 | 高并发会话，低资源开销 |
 | 消息流 | 简单回调 + 可选 `Flow` 适配器 | 不引入 Reactive Streams 依赖 |
+| Spring Boot | 3.2.x（starter，optional 依赖） | 自动装配 TaiyiAgent 与 DigitalWorker |
 
-## 开发计划
+## 构建与测试
 
-| 阶段 | 内容 | 依赖 |
-|------|------|------|
-| **Phase A** | Hook SPI 与协议模型冻结；核实工具调用回调通道 | — |
-| **Phase B** | 传输层：流式 WS + REST 客户端 | A |
-| **Phase C** | 内核：TaiyiAgent / SessionManager / ToolDispatcher / PluginManager | B |
-| **Phase D** | 内置插件与 Hook 语义落地 | C |
-| **Phase E** | 可选协同插件（CollaborationPlugin + SchedulePlugin） | C（与 D 并行） |
-| **Phase F** | Spring Boot Starter、示例与文档 | D/E |
-
-## 验证策略
-
-1. **协议单测**：封套解析、事件常量与后端字符串全量对照、超时与关闭码映射
-2. **多会话并行测试**：并发 N 个会话，验证隔离、独立中断、资源回收
-3. **Hook 链测试**：零 Hook 默认路径 / StreamHook 全量事件 / ToolExecutionHook takeover / PermissionHook deny
-4. **工具回调集成测试**：对接本地后端，跑通全链路
-5. **协同插件测试**：启用后接收/执行/回报；未启用时无被动连接
-6. **开箱即用验收**：minimal 示例仅填 baseUrl/token/flowId 即运行
-
-## 项目结构
-
+```bash
+./mvnw clean compile                          # 编译全部模块
+./mvnw test                                   # 全部单元测试
+./mvnw -pl taiyiflow-sdk-plugins -am test     # 单模块测试（连带依赖模块）
+./mvnw package                                # 打包（worker 模块产出 *-all.jar）
+make image                                    # 构建 Worker 容器镜像
 ```
-taiyiflow-javasdk/
-├── pom.xml                              # Parent POM
-├── taiyiflow-sdk-core/                  # 核心模块
-│   └── src/main/java/io/taiyiflow/sdk/
-│       ├── TaiyiAgent.java              # 智能体门面（Builder 模式）
-│       ├── AgentSession.java            # 会话接口
-│       ├── hooks/                       # Hook SPI（4 个接口）
-│       │   ├── StreamHook.java
-│       │   ├── ToolExecutionHook.java
-│       │   ├── PermissionHook.java
-│       │   └── SessionHook.java
-│       ├── core/
-│       │   ├── session/                 # SessionManager + AgentSessionImpl
-│       │   ├── dispatch/                # ToolDispatcher（Hook 链编排）
-│       │   ├── plugin/                  # PluginManager
-│       │   └── state/                   # SessionState 状态机
-│       └── transport/
-│           ├── envelope/                # 协议模型 + 事件常量
-│           ├── stream/                  # StreamClient (WS) + SseStreamClient
-│           └── rest/                    # RestClient
-├── taiyiflow-sdk-plugins/               # 内置插件
-│   └── src/main/java/io/taiyiflow/sdk/plugins/
-│       ├── BuiltinPlugins.java          # 一键注册
-│       ├── shell/ShellPlugin.java       # Shell 命令执行（白名单 + 工作目录）
-│       ├── files/FilePlugin.java        # 文件读写（沙盒限制）
-│       └── search/SearchPlugin.java     # 文本/正则搜索
-├── taiyiflow-sdk-collaboration/         # 可选协同插件
-│   └── src/main/java/io/taiyiflow/sdk/collaboration/
-│       ├── CollaborationPlugin.java     # 协同 WS（被动接收任务）
-│       └── SchedulePlugin.java          # 定时任务
-├── taiyiflow-sdk-worker/                # 数字人运行时
-│   └── src/main/java/io/taiyiflow/sdk/worker/
-│       ├── DigitalWorker.java           # 常驻运行时、任务路由与平台客户端
-│       ├── DigitalWorkerMain.java       # worker.yml 配置化容器入口
-│       ├── WorkerConfig.java            # YAML 配置模型
-│       ├── WorkerHook.java              # 生命周期与任务观测扩展
-│       ├── AgentSessionTaskHandler.java # 默认会话任务执行
-│       ├── TaskExecutor.java            # 幂等执行与平台快照对账
-│       └── auth/                        # 双认证、换牌与加密凭证存储
-├── taiyiflow-spring-boot-starter/       # Spring Boot 自动装配
-│   └── src/main/java/io/taiyiflow/sdk/starter/
-│       ├── TaiyiFlowProperties.java     # 配置属性
-│       └── TaiyiFlowAutoConfiguration.java
-└── taiyiflow-sdk-examples/              # 示例
-    └── src/main/java/io/taiyiflow/sdk/examples/
-        ├── MinimalExample.java          # 最简示例
-        ├── ToolTakeoverExample.java     # 工具接管 + 权限拦截
-        ├── MultiSessionExample.java     # 多会话并行
-        ├── CollaborationExample.java    # 协同模式
-        ├── PauseResumeExample.java      # 暂停与检查点恢复
-        ├── RetryRepeatExample.java      # 重试与重复执行
-        └── LocalApprovalExample.java    # 本地人工审批
+
+## 文档站点（VitePress）
+
+文档站是位于 `docs/` 的**自包含构建单元**，拥有独立的 `package.json`、`Dockerfile.docs` 与 `BUILD.yaml`，与 Worker 运行时镜像相互独立，可作为独立服务组件发布。
+
+```bash
+make docs-init      # 安装文档依赖（在 docs/ 下执行 npm install）
+make docs-dev       # 本地开发预览
+make docs-build     # 构建（Docker 渠道，base=/taiyi/javasdk/docs/）
+make docs-build-gh  # 构建（GitHub Pages 渠道，base=/taiyiflow-javasdk/）
+make docs-image     # 构建文档站镜像（构建上下文为 docs/）
+make docs-run       # 运行文档站容器（默认端口 5002）
+make docs-stop      # 停止并删除容器
 ```
+
+也可直接在 `docs/` 目录下用 `snz1dpctl` 按独立组件发布：
+
+```bash
+cd docs
+snz1dpctl make docker     # 构建镜像 snz1.cn/taiyiflow/javasdk-docs
+snz1dpctl make publish    # 发布到慧码至一组件仓库
+```
+
+**运行时上下文路径**：镜像内置 base 为 `/taiyi/javasdk/docs/`，启动时由 `docs/scripts/40-replace-context-path.sh` 按 `WEB_CONTEXT_PATH` 环境变量重定位静态产物与 nginx 配置，无需重新构建即可挂到任意网关路径下（见 `docs/BUILD.yaml` 的 `service.envs` 与 `ingress`）。
+
+## 文档索引
+
+| 文档 | 内容 |
+|------|------|
+| [docs/getting-started.md](docs/getting-started.md) | 安装、环境、最简示例、示例运行 |
+| [docs/agent-and-session.md](docs/agent-and-session.md) | TaiyiAgent Builder 全量配置、AgentSession API、多会话、REST 能力面 |
+| [docs/hooks.md](docs/hooks.md) | 4 个 Hook、PermissionPolicy、执行顺序与审批 |
+| [docs/plugins.md](docs/plugins.md) | 内置工具插件、后台进程、工作区审计、自定义工具 |
+| [docs/mcp.md](docs/mcp.md) | HTTP 与 stdio MCP 接入及安全策略 |
+| [docs/execution-control.md](docs/execution-control.md) | 暂停/恢复/重试/重放、断线恢复、结果补传 Outbox |
+| [docs/digital-worker.md](docs/digital-worker.md) | DigitalWorker、身份与认证、任务可靠性、受控子任务、worker.yml |
+| [docs/collaboration.md](docs/collaboration.md) | CollaborationPlugin / SchedulePlugin 底层协同 API |
+| [docs/spring-boot.md](docs/spring-boot.md) | Starter 全量配置键与 Bean 装配 |
+| [docs/protocol.md](docs/protocol.md) | 流式/协同协议、事件与关闭码、REST 端点 |
+| [docs/deployment.md](docs/deployment.md) | 单实例容器构建与部署 |
+| [docs/examples.md](docs/examples.md) | 7 个示例说明与运行命令 |
+
+部署运维手册另见 [deploy/single-instance-container.md](deploy/single-instance-container.md)，示例配置见 [deploy/worker.yml](deploy/worker.yml)。
 
 ## License
 

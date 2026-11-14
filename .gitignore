@@ -9,3 +9,9 @@ dependency-reduced-pom.xml
 *.iml
 .vscode/
 .DS_Store
+
+# 文档站点（VitePress，位于 docs/ 目录）
+docs/node_modules/
+docs/.vitepress/cache/
+docs/.vitepress/dist/
+docs/npm-debug.log*

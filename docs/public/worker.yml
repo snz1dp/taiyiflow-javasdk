@@ -1,0 +1,40 @@
+base-url: http://taiyiflow-platform:8080
+auth:
+  type: API_KEY
+  token-secret: TAIYIFLOW_API_KEY
+identity:
+  worker-id: backend-worker-1
+  display-name: Backend Digital Worker
+  role: COLLABORATION_WORKER
+  # Declare only abilities implemented by the configured task handler or extensions.
+  abilities: []
+workspace: /var/lib/taiyiflow/worker
+state-dir: /var/lib/taiyiflow/runtime-state
+outbox:
+  max-entries: 1000
+  max-entry-bytes: 1048576
+  max-total-bytes: 16777216
+  max-retries: 32
+recovery-policy: AUTO
+permission-policy: CONFIRM
+approval:
+  channel: PLATFORM
+execution:
+  concurrency: 3
+  connect-timeout: PT15S
+  drain-timeout: PT30S
+  request-timeout: PT30S
+extensions:
+  identity-validator: your.platform.PlatformWorkerIdentityValidator
+  # task-handler: your.platform.BusinessTaskHandler
+  # approval-handler: your.platform.PlatformApprovalHandler
+  # approval-audit: your.platform.PlatformApprovalAudit
+  # hooks: [your.platform.MetricsWorkerHook]
+
+# Persistent-token authentication uses an encrypted store outside workspace:
+# auth:
+#   type: PERSISTENT_TOKEN
+#   token-secret: TAIYIFLOW_PERSISTENT_TOKEN
+#   device-id: backend-device-1
+#   credential-file: /var/lib/taiyiflow-credentials/credentials.json
+#   key-file: /var/lib/taiyiflow-credentials/encryption.key

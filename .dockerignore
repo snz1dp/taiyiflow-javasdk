@@ -16,3 +16,4 @@ build/
 *.pem
 *.key
 certs/
+docs/

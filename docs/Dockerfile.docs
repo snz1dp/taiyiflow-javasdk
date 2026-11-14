@@ -1,0 +1,34 @@
+# ============================================================
+# 太乙智启 Java SDK 文档站点（VitePress）
+# 自包含构建单元：构建上下文为本目录（docs/），与 Worker 运行时镜像相互独立
+# 由 docs/BUILD.yaml 描述为独立服务组件（snz1dpctl make docker/package/publish）
+# ============================================================
+
+# Stage 1: 构建文档站点
+# 构建产物为纯静态文件，与架构无关；强制在构建机原生架构下执行，
+# 避免在 Apple Silicon 上通过 QEMU 模拟 amd64 运行 esbuild 导致崩溃
+FROM --platform=$BUILDPLATFORM snz1.cn/base/node:20-alpine AS docs-build
+
+WORKDIR /app
+COPY package.json package-lock.json ./
+COPY .vitepress ./.vitepress
+COPY public ./public
+COPY *.md ./
+
+RUN npm config set registry https://registry.npmmirror.com/
+# 默认 base=/taiyi/javasdk/docs/，与 BUILD.yaml 的 WEB_CONTEXT_PATH 保持一致；
+# 运行时可通过 WEB_CONTEXT_PATH 环境变量重定位（见 scripts/40-replace-context-path.sh）
+RUN npm ci && VITEPRESS_BASE_PATH=/taiyi/javasdk/docs/ npm run docs:build
+
+# Stage 2: 运行时（Nginx 静态托管）
+FROM snz1.cn/dp/vueapp:2.2
+
+# Nginx 配置
+ADD nginx/docs.conf /etc/nginx/conf.d/
+
+# WEB_CONTEXT_PATH 运行时上下文路径替换脚本
+ADD scripts/40-replace-context-path.sh /docker-entrypoint.d/
+RUN chmod +x /docker-entrypoint.d/40-replace-context-path.sh
+
+# 文档站点构建产物
+COPY --from=docs-build /app/.vitepress/dist /app/html
