@@ -2,6 +2,7 @@ package io.taiyiflow.sdk.plugins.search;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.taiyiflow.sdk.core.plugin.PluginManager;
 import io.taiyiflow.sdk.transport.envelope.ToolCall;
@@ -12,8 +13,11 @@ import org.slf4j.LoggerFactory;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
+
+import static io.taiyiflow.sdk.plugins.ToolDefinitions.tool;
 
 /**
  * Text and regex search plugin.
@@ -85,9 +89,44 @@ public class SearchPlugin {
         }
     }
 
+    public ToolResult glob(ToolCall toolCall) {
+        JsonNode args = toolCall.getArguments();
+        String pattern = args == null ? "**/*" : args.path("pattern").asText("**/*");
+        String path = args == null ? "." : args.path("path").asText(".");
+        if (pattern.isBlank() || pattern.length() > 1000) {
+            return ToolResult.error(toolCall.getId(), "A bounded glob pattern is required");
+        }
+        try {
+            Path sandboxRealRoot = sandboxRoot.toRealPath();
+            Path requestedRoot = sandboxRoot.resolve(path).normalize();
+            if (!requestedRoot.startsWith(sandboxRoot)) return ToolResult.error(toolCall.getId(), "Path escapes sandbox");
+            Path searchRoot = requestedRoot.toRealPath();
+            if (!searchRoot.startsWith(sandboxRealRoot)) return ToolResult.error(toolCall.getId(), "Path escapes sandbox");
+            var matcher = searchRoot.getFileSystem().getPathMatcher("glob:" + pattern);
+            List<Path> files;
+            try (Stream<Path> paths = Files.walk(searchRoot)) {
+                files = paths.filter(file -> Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS))
+                        .filter(file -> matcher.matches(searchRoot.relativize(file))).sorted()
+                        .limit(1001).toList();
+            }
+            ObjectNode result = mapper.createObjectNode();
+            ArrayNode matches = result.putArray("files");
+            files.stream().limit(1000).forEach(file -> matches.add(sandboxRealRoot.relativize(file).toString()));
+            result.put("count", Math.min(files.size(), 1000));
+            result.put("truncated", files.size() > 1000);
+            return ToolResult.success(toolCall.getId(), result);
+        } catch (Exception exception) {
+            return ToolResult.error(toolCall.getId(), "Glob failed: " + exception.getMessage());
+        }
+    }
+
     public static void register(PluginManager pm, Path sandboxRoot) {
         SearchPlugin plugin = new SearchPlugin(sandboxRoot);
-        pm.register("search", plugin::search);
-        pm.register("grep", plugin::search);
+        String schema = "{\"pattern\":{\"type\":\"string\"},\"path\":{\"type\":\"string\"},"
+                + "\"regex\":{\"type\":\"boolean\"}}";
+        pm.register(tool("search", "Search text in workspace files", schema, "pattern"), plugin::search);
+        pm.register(tool("grep", "Search text in workspace files", schema, "pattern"), plugin::search);
+        pm.register(tool("glob_files", "List sandbox files matching a glob pattern",
+                "{\"pattern\":{\"type\":\"string\"},\"path\":{\"type\":\"string\"}}"), plugin::glob);
     }
 }

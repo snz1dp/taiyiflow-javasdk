@@ -1,9 +1,12 @@
 package io.taiyiflow.sdk.core.plugin;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.taiyiflow.sdk.hooks.SessionHook;
 import io.taiyiflow.sdk.transport.envelope.ToolCall;
 import io.taiyiflow.sdk.transport.envelope.ToolResult;
 import org.junit.jupiter.api.Test;
+
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -41,6 +44,28 @@ class PluginManagerTest {
 
         pm.unregister("tool");
         assertFalse(pm.hasHandler("tool"));
+    }
+
+    @Test
+    void notifiesRegisteredSessionCleanupWithoutInterruptingOtherHooks() {
+        PluginManager pm = new PluginManager();
+        AtomicInteger cleaned = new AtomicInteger();
+        pm.registerSessionHook(new SessionHook() {
+            @Override
+            public void onClose(String sessionId) {
+                throw new IllegalStateException("ignored");
+            }
+        });
+        pm.registerSessionHook(new SessionHook() {
+            @Override
+            public void onClose(String sessionId) {
+                if ("session-1".equals(sessionId)) cleaned.incrementAndGet();
+            }
+        });
+
+        pm.notifySessionClose("session-1");
+
+        assertEquals(1, cleaned.get());
     }
 
     @Test

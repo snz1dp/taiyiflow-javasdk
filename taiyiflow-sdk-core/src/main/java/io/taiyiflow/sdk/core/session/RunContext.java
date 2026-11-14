@@ -1,6 +1,7 @@
 package io.taiyiflow.sdk.core.session;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import io.taiyiflow.sdk.core.skill.SkillSupplySnapshot;
 import io.taiyiflow.sdk.core.subtask.SubtaskCapabilitySnapshot;
 import io.taiyiflow.sdk.transport.envelope.AgentLoopControlResult;
 import io.taiyiflow.sdk.transport.envelope.ChatRequest;
@@ -26,6 +27,8 @@ public class RunContext {
     private List<String> lastInputFiles = List.of();
     private String requestType;
     private SubtaskCapabilitySnapshot capabilities = SubtaskCapabilitySnapshot.empty();
+    private List<JsonNode> availableTools;
+    private SkillSupplySnapshot skillSupply = SkillSupplySnapshot.empty();
     private long recoveryGeneration;
     private boolean persisted;
 
@@ -40,6 +43,9 @@ public class RunContext {
         lastInputFiles = request.getInputFiles() == null ? List.of() : List.copyOf(request.getInputFiles());
         requestType = request.getRequestType();
         capabilities = SubtaskCapabilitySnapshot.fromChatRequest(request);
+        availableTools = request.getAvailableTools() == null ? null : request.getAvailableTools().stream()
+                .<JsonNode>map(JsonNode::deepCopy).toList();
+        skillSupply = new SkillSupplySnapshot(request.getClientSkillPackages(), request.getRequestedSkillNames(), List.of());
         persisted = false;
     }
 
@@ -152,6 +158,14 @@ public class RunContext {
 
     public synchronized SubtaskCapabilitySnapshot getCapabilities() {
         return capabilities;
+    }
+
+    public synchronized List<JsonNode> getAvailableTools() {
+        return availableTools == null ? null : availableTools.stream().<JsonNode>map(JsonNode::deepCopy).toList();
+    }
+
+    public synchronized SkillSupplySnapshot getSkillSupply() {
+        return skillSupply;
     }
 
     public synchronized long getRecoveryGeneration() {

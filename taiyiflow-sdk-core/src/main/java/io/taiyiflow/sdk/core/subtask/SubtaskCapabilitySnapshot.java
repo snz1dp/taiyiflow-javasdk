@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.taiyiflow.sdk.transport.envelope.ChatRequest;
+import io.taiyiflow.sdk.transport.envelope.ClientSkillPackage;
 
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
@@ -19,17 +20,27 @@ public final class SubtaskCapabilitySnapshot {
     private final JsonNode knowledgeScopes;
     private final JsonNode knowledgeDocs;
     private final List<String> requestedSkillNames;
+    private final List<ClientSkillPackage> clientSkillPackages;
     private final List<String> mcpServerNames;
     private final Set<String> allowedTools;
 
     public SubtaskCapabilitySnapshot(Boolean reasoning, Boolean internetSearch, JsonNode knowledgeScopes,
                                      JsonNode knowledgeDocs, List<String> requestedSkillNames,
                                      List<String> mcpServerNames, Set<String> allowedTools) {
+        this(reasoning, internetSearch, knowledgeScopes, knowledgeDocs, requestedSkillNames,
+                List.of(), mcpServerNames, allowedTools);
+    }
+
+    public SubtaskCapabilitySnapshot(Boolean reasoning, Boolean internetSearch, JsonNode knowledgeScopes,
+                                     JsonNode knowledgeDocs, List<String> requestedSkillNames,
+                                     List<ClientSkillPackage> clientSkillPackages,
+                                     List<String> mcpServerNames, Set<String> allowedTools) {
         this.reasoning = reasoning;
         this.internetSearch = internetSearch;
         this.knowledgeScopes = copy(knowledgeScopes);
         this.knowledgeDocs = copy(knowledgeDocs);
         this.requestedSkillNames = immutableStrings(requestedSkillNames);
+        this.clientSkillPackages = clientSkillPackages == null ? List.of() : List.copyOf(clientSkillPackages);
         this.mcpServerNames = immutableStrings(mcpServerNames);
         this.allowedTools = allowedTools == null ? null : Set.copyOf(allowedTools);
     }
@@ -41,7 +52,8 @@ public final class SubtaskCapabilitySnapshot {
     public static SubtaskCapabilitySnapshot fromChatRequest(ChatRequest request) {
         return new SubtaskCapabilitySnapshot(request.getReasoning(), request.getInternetSearch(),
                 request.getKnowledgeScopes(), request.getKnowledgeDocs(), request.getRequestedSkillNames(),
-                serverNames(request.getClientMcpServers()), allowedTools(request.getAvailableTools()));
+                request.getClientSkillPackages(), serverNames(request.getClientMcpServers()),
+                allowedTools(request.getAvailableTools()));
     }
 
     public static SubtaskCapabilitySnapshot fromFeatures(JsonNode features, JsonNode availableTools) {
@@ -78,6 +90,7 @@ public final class SubtaskCapabilitySnapshot {
     public JsonNode getKnowledgeScopes() { return copy(knowledgeScopes); }
     public JsonNode getKnowledgeDocs() { return copy(knowledgeDocs); }
     public List<String> getRequestedSkillNames() { return requestedSkillNames; }
+    public List<ClientSkillPackage> getClientSkillPackages() { return clientSkillPackages; }
     public List<String> getMcpServerNames() { return mcpServerNames; }
     public Set<String> getAllowedTools() { return allowedTools; }
 
@@ -87,6 +100,7 @@ public final class SubtaskCapabilitySnapshot {
         request.setKnowledgeScopes(copy(knowledgeScopes));
         request.setKnowledgeDocs(copy(knowledgeDocs));
         request.setRequestedSkillNames(requestedSkillNames);
+        request.setClientSkillPackages(clientSkillPackages);
         List<JsonNode> tools = new ArrayList<>();
         availableTools().forEach(tools::add);
         request.setAvailableTools(tools);

@@ -28,6 +28,16 @@ class DigitalWorkerMainTest {
     }
 
     @Test
+    void coreWorkerClassDoesNotLinkOptionalBrowserModule() throws Exception {
+        byte[] bytecode;
+        try (var input = DigitalWorker.class.getResourceAsStream("DigitalWorker.class")) {
+            bytecode = input.readAllBytes();
+        }
+        String constants = new String(bytecode, java.nio.charset.StandardCharsets.ISO_8859_1);
+        org.junit.jupiter.api.Assertions.assertFalse(constants.contains("io/taiyiflow/sdk/browser"));
+    }
+
+    @Test
     void missingSecretFailsWithoutIncludingCredentialMaterial(@TempDir Path workspace) {
         WorkerConfig config = config(workspace, TestValidator.class.getName());
 

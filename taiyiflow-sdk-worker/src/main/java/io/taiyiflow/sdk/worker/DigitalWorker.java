@@ -13,6 +13,7 @@ import io.taiyiflow.sdk.core.subtask.SubtaskOrchestrator;
 import io.taiyiflow.sdk.core.subtask.SubtaskTask;
 import io.taiyiflow.sdk.hooks.PermissionHook;
 import io.taiyiflow.sdk.hooks.PermissionPolicy;
+import io.taiyiflow.sdk.plugins.BuiltinPlugins;
 import io.taiyiflow.sdk.transport.rest.FileClient;
 import io.taiyiflow.sdk.transport.rest.MemoryClient;
 import io.taiyiflow.sdk.transport.rest.RestClient;
@@ -43,6 +44,13 @@ public final class DigitalWorker {
     private final Set<Ability> abilities;
     private final ToolRuntime toolRuntime;
     private final Path workspace;
+    private final boolean builtinToolsEnabled;
+    private final List<String> allowedShellCommands;
+    private final io.taiyiflow.sdk.core.skill.SkillSupplier skillSupplier;
+    private final io.taiyiflow.sdk.plugins.skill.SkillManager skillManager;
+    private final List<String> defaultSkillNames;
+    private final boolean mediaEnabled;
+    private final Consumer<TaiyiAgent> agentCustomizer;
     private final RecoveryPolicy recoveryPolicy;
     private final PermissionPolicy permissionPolicy;
     private final ApprovalChannel approvalChannel;
@@ -82,6 +90,13 @@ public final class DigitalWorker {
                 .perSessionConcurrency(builder.concurrency)
                 .build(), createReportOutbox(builder), this::onReportAlert);
         this.workspace = builder.workspace;
+        this.builtinToolsEnabled = builder.builtinToolsEnabled;
+        this.allowedShellCommands = List.copyOf(builder.allowedShellCommands);
+        this.skillSupplier = builder.skillSupplier;
+        this.skillManager = builder.skillManager;
+        this.defaultSkillNames = List.copyOf(builder.defaultSkillNames);
+        this.mediaEnabled = builder.mediaEnabled;
+        this.agentCustomizer = builder.agentCustomizer;
         this.recoveryPolicy = builder.recoveryPolicy;
         this.permissionPolicy = builder.permissionPolicy;
         this.approvalChannel = builder.approvalChannel;
@@ -306,18 +321,28 @@ public final class DigitalWorker {
     }
 
     private TaiyiAgent newAgent(String flowId) {
-        TaiyiAgent agent = TaiyiAgent.builder()
+        TaiyiAgent.Builder agentBuilder = TaiyiAgent.builder()
                 .baseUrl(baseUrl)
                 .accessToken(auth::accessToken)
                 .flowId(flowId)
                 .clientId(clientId)
                 .deviceId(deviceId)
                 .requestTimeout(requestTimeout)
+                .workspace(workspace)
                 .recoveryPolicy(recoveryPolicy)
                 .permissionPolicy(permissionPolicy)
                 .permissionHook(approvalHook)
-                .toolRuntime(toolRuntime)
-                .build();
+                .toolRuntime(toolRuntime);
+        if (skillSupplier != null) agentBuilder.skillSupplier(skillSupplier, defaultSkillNames);
+        TaiyiAgent agent = agentBuilder.build();
+        if (builtinToolsEnabled) {
+            BuiltinPlugins.registerAll(agent.getPluginManager(), workspace, allowedShellCommands);
+        }
+        if (mediaEnabled) BuiltinPlugins.registerMedia(agent.getPluginManager(), agent.getRestClient());
+        if (skillSupplier != null && skillManager != null) {
+            BuiltinPlugins.registerSkills(agent.getPluginManager(), skillSupplier, skillManager, defaultSkillNames);
+        }
+        agentCustomizer.accept(agent);
         SubtaskOrchestrator orchestrator = subtaskOrchestrator;
         if (orchestrator != null) {
             orchestrator.register(agent.getPluginManager());
@@ -408,6 +433,8 @@ public final class DigitalWorker {
         private WorkerRole role = WorkerRole.COLLABORATION_WORKER;
         private Set<Ability> abilities = Set.of();
         private Path workspace;
+        private boolean builtinToolsEnabled;
+        private List<String> allowedShellCommands = List.of();
         private Path stateDir;
         private ReportOutbox.Limits outboxLimits = ReportOutbox.Limits.DEFAULT;
         private int concurrency = 3;
@@ -426,6 +453,11 @@ public final class DigitalWorker {
         private Duration connectTimeout = Duration.ofSeconds(15);
         private Duration drainTimeout = Duration.ofSeconds(30);
         private Duration requestTimeout = Duration.ofSeconds(30);
+        private io.taiyiflow.sdk.core.skill.SkillSupplier skillSupplier;
+        private io.taiyiflow.sdk.plugins.skill.SkillManager skillManager;
+        private List<String> defaultSkillNames = List.of();
+        private boolean mediaEnabled;
+        private Consumer<TaiyiAgent> agentCustomizer = agent -> { };
 
         public Builder baseUrl(String value) {
             this.baseUrl = value;
@@ -467,6 +499,12 @@ public final class DigitalWorker {
 
         public Builder workspace(Path value) {
             this.workspace = value;
+            return this;
+        }
+
+        public Builder enableBuiltinTools(List<String> shellCommands) {
+            this.builtinToolsEnabled = true;
+            this.allowedShellCommands = shellCommands == null ? List.of() : List.copyOf(shellCommands);
             return this;
         }
 
@@ -571,6 +609,27 @@ public final class DigitalWorker {
                 throw new IllegalArgumentException("requestTimeout must be positive");
             }
             this.requestTimeout = value;
+            return this;
+        }
+
+        public Builder skillSupplier(io.taiyiflow.sdk.core.skill.SkillSupplier value, List<String> defaultNames) {
+            this.skillSupplier = value;
+            this.defaultSkillNames = defaultNames == null ? List.of() : List.copyOf(defaultNames);
+            return this;
+        }
+
+        public Builder skillManager(io.taiyiflow.sdk.plugins.skill.SkillManager value) {
+            this.skillManager = value;
+            return this;
+        }
+
+        public Builder enableMediaUnderstanding() {
+            this.mediaEnabled = true;
+            return this;
+        }
+
+        public Builder agentCustomizer(Consumer<TaiyiAgent> value) {
+            this.agentCustomizer = java.util.Objects.requireNonNull(value);
             return this;
         }
 

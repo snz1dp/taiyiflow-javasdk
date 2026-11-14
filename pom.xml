@@ -15,6 +15,7 @@
     <modules>
         <module>taiyiflow-sdk-core</module>
         <module>taiyiflow-sdk-plugins</module>
+        <module>taiyiflow-sdk-browser</module>
         <module>taiyiflow-sdk-collaboration</module>
         <module>taiyiflow-sdk-worker</module>
         <module>taiyiflow-spring-boot-starter</module>
@@ -32,6 +33,7 @@
         <logback.version>1.5.3</logback.version>
         <junit.version>5.10.2</junit.version>
         <mockito.version>5.11.0</mockito.version>
+        <playwright.version>1.49.0</playwright.version>
     </properties>
 
     <dependencyManagement>
@@ -50,6 +52,11 @@
                 <groupId>com.fasterxml.jackson.dataformat</groupId>
                 <artifactId>jackson-dataformat-yaml</artifactId>
                 <version>${jackson.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.microsoft.playwright</groupId>
+                <artifactId>playwright</artifactId>
+                <version>${playwright.version}</version>
             </dependency>
             <dependency>
                 <groupId>org.slf4j</groupId>

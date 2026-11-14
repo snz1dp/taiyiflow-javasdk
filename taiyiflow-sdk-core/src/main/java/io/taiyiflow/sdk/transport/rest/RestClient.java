@@ -11,7 +11,11 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.LinkOption;
+import java.nio.file.Path;
 import java.time.Duration;
+import java.util.List;
 import java.util.Map;
 import java.util.StringJoiner;
 import java.util.TreeMap;
@@ -66,6 +70,18 @@ public class RestClient {
         return sendJson(path, "PATCH", jsonBody(body), "application/json");
     }
 
+    public RestResponse postRaw(String path, JsonNode body, Duration timeout) throws Exception {
+        HttpResponse<byte[]> response = send(path, "POST", jsonBody(body), "application/json",
+                HttpResponse.BodyHandlers.ofByteArray(), timeout);
+        return new RestResponse(response.statusCode(), response.headers().map(), response.body());
+    }
+
+    public RestResponse getRaw(String path, Duration timeout) throws Exception {
+        HttpResponse<byte[]> response = send(path, "GET", HttpRequest.BodyPublishers.noBody(), null,
+                HttpResponse.BodyHandlers.ofByteArray(), timeout);
+        return new RestResponse(response.statusCode(), response.headers().map(), response.body());
+    }
+
     public JsonNode postForm(String path, Map<String, String> form) throws Exception {
         StringJoiner body = new StringJoiner("&");
         form.forEach((key, value) -> body.add(encode(key) + "=" + encode(value)));
@@ -89,6 +105,28 @@ public class RestClient {
         writeAscii(output, "\r\n--" + boundary + "--\r\n");
         return sendJson(path, "POST", HttpRequest.BodyPublishers.ofByteArray(output.toByteArray()),
                 "multipart/form-data; boundary=" + boundary);
+    }
+
+    public JsonNode postMultipart(String path, Map<String, String> fields, PathMultipartFile file) throws Exception {
+        if (!Files.isRegularFile(file.path(), LinkOption.NOFOLLOW_LINKS)) {
+            throw new IllegalArgumentException("Upload must be a regular, non-symbolic-link file");
+        }
+        String boundary = "taiyiflow-" + UUID.randomUUID();
+        ByteArrayOutputStream prefix = new ByteArrayOutputStream();
+        for (Map.Entry<String, String> field : fields.entrySet()) {
+            writeAscii(prefix, "--" + boundary + "\r\n"
+                    + "Content-Disposition: form-data; name=\"" + quote(field.getKey()) + "\"\r\n\r\n"
+                    + field.getValue() + "\r\n");
+        }
+        writeAscii(prefix, "--" + boundary + "\r\n"
+                + "Content-Disposition: form-data; name=\"" + quote(file.fieldName())
+                + "\"; filename=\"" + quote(file.filename()) + "\"\r\n"
+                + "Content-Type: " + file.contentType().replace("\r", "").replace("\n", "") + "\r\n\r\n");
+        HttpRequest.BodyPublisher body = HttpRequest.BodyPublishers.concat(
+                HttpRequest.BodyPublishers.ofByteArray(prefix.toByteArray()),
+                HttpRequest.BodyPublishers.ofFile(file.path()),
+                HttpRequest.BodyPublishers.ofString("\r\n--" + boundary + "--\r\n"));
+        return sendJson(path, "POST", body, "multipart/form-data; boundary=" + boundary);
     }
 
     public void delete(String path) throws Exception {
@@ -149,9 +187,14 @@ public class RestClient {
 
     private <T> HttpResponse<T> send(String path, String method, HttpRequest.BodyPublisher body, String contentType,
                                      HttpResponse.BodyHandler<T> bodyHandler) throws Exception {
+        return send(path, method, body, contentType, bodyHandler, requestTimeout);
+    }
+
+    private <T> HttpResponse<T> send(String path, String method, HttpRequest.BodyPublisher body, String contentType,
+                                     HttpResponse.BodyHandler<T> bodyHandler, Duration timeout) throws Exception {
         HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
                 .uri(URI.create(baseUrl + path))
-                .timeout(requestTimeout)
+                .timeout(timeout == null ? requestTimeout : timeout)
                 .header("Accept", "application/json");
         String token = accessToken.get();
         if (token != null && !token.isBlank()) {
@@ -178,6 +221,44 @@ public class RestClient {
 
     private static void writeAscii(ByteArrayOutputStream output, String value) throws IOException {
         output.write(value.getBytes(StandardCharsets.UTF_8));
+    }
+
+    public record PathMultipartFile(String fieldName, String filename, String contentType, Path path) {
+        public PathMultipartFile {
+            path = path.toAbsolutePath().normalize();
+        }
+    }
+
+    public static final class RestResponse {
+        private final int statusCode;
+        private final Map<String, List<String>> headers;
+        private final byte[] body;
+
+        private RestResponse(int statusCode, Map<String, List<String>> headers, byte[] body) {
+            this.statusCode = statusCode;
+            this.headers = headers.entrySet().stream().collect(java.util.stream.Collectors.toUnmodifiableMap(
+                    entry -> entry.getKey().toLowerCase(java.util.Locale.ROOT),
+                    entry -> List.copyOf(entry.getValue())));
+            this.body = body.clone();
+        }
+
+        public int statusCode() { return statusCode; }
+        public Map<String, List<String>> headers() { return headers; }
+        public String header(String name) {
+            List<String> values = headers.get(name.toLowerCase(java.util.Locale.ROOT));
+            return values == null || values.isEmpty() ? null : values.get(0);
+        }
+        public String mediaType() { return header("content-type"); }
+        public byte[] body() { return body.clone(); }
+        public String text() { return new String(body, StandardCharsets.UTF_8); }
+        public JsonNode json() throws Exception { return mapper.readTree(body); }
+
+        public RestResponse requireSuccess() {
+            if (statusCode < 200 || statusCode >= 300) {
+                throw new RestException(statusCode, text());
+            }
+            return this;
+        }
     }
 
     public record MultipartFile(String fieldName, String filename, String contentType, byte[] content) {

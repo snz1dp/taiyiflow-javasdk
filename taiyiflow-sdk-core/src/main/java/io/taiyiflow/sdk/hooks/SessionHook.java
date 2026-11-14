@@ -29,4 +29,7 @@ public interface SessionHook {
      */
     default void onInterrupt(String sessionId, String reason) {
     }
+
+    default void onClose(String sessionId) {
+    }
 }

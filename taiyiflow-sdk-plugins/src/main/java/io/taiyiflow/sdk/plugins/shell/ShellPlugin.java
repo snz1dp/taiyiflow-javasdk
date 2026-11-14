@@ -11,6 +11,8 @@ import io.taiyiflow.sdk.plugins.workspace.WorkspaceAudit;
 import io.taiyiflow.sdk.transport.envelope.ToolCall;
 import io.taiyiflow.sdk.transport.envelope.ToolResult;
 
+import static io.taiyiflow.sdk.plugins.ToolDefinitions.tool;
+
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.Reader;
@@ -573,13 +575,42 @@ public class ShellPlugin implements PluginManager.ContextualToolHandler, AutoClo
 
     public static void register(PluginManager pm, Path workDir, List<String> allowedCommands) {
         ShellPlugin plugin = new ShellPlugin(workDir, allowedCommands);
-        pm.register("shell", plugin);
-        pm.register("bash", plugin);
-        pm.register("execute_command", plugin);
-        pm.register("process_list", (PluginManager.ContextualToolHandler) plugin::processList);
-        pm.register("process_output", (PluginManager.ContextualToolHandler) plugin::processOutput);
-        pm.register("process_stop", (PluginManager.ContextualToolHandler) plugin::processStop);
-        pm.register("process_cleanup", (PluginManager.ContextualToolHandler) plugin::processCleanup);
+        String commandSchema = "{\"command\":{\"type\":\"string\"},\"cwd\":{\"type\":\"string\"},"
+                + "\"background\":{\"type\":\"boolean\"}}";
+        pm.register(tool("shell", "Execute a whitelisted command in the sandbox", commandSchema, "command"), plugin);
+        pm.register(tool("bash", "Execute a whitelisted command in the sandbox", commandSchema, "command"), plugin);
+        pm.register(tool("execute_command", "Execute a whitelisted command in the sandbox", commandSchema,
+                "command"), plugin);
+        pm.register(tool("shell_exec", "Execute a whitelisted command in the sandbox", commandSchema,
+                "command"), plugin);
+        pm.register(tool("process_list", "List local background processes for this session", "{}"),
+                (PluginManager.ContextualToolHandler) plugin::processList);
+        String outputSchema = "{\"process_handle\":{\"type\":\"string\"},\"handle\":{\"type\":\"string\"},"
+                + "\"stdout_offset\":{\"type\":\"integer\"},\"stderr_offset\":{\"type\":\"integer\"}}";
+        pm.register(tool("process_output", "Read local background process output", outputSchema),
+                (PluginManager.ContextualToolHandler) plugin::processOutput);
+        String handleSchema = "{\"process_handle\":{\"type\":\"string\"},\"handle\":{\"type\":\"string\"}}";
+        pm.register(tool("process_stop", "Stop a local background process", handleSchema),
+                (PluginManager.ContextualToolHandler) plugin::processStop);
+        pm.register(tool("process_cleanup", "Clean up local background process handles", handleSchema),
+                (PluginManager.ContextualToolHandler) plugin::processCleanup);
+        pm.register(tool("task_list", "List local SDK background process handles for this session", "{}"),
+                (PluginManager.ContextualToolHandler) plugin::processList);
+        pm.register(tool("task_output", "Read local SDK background process output", outputSchema),
+                (PluginManager.ContextualToolHandler) plugin::processOutput);
+        pm.register(tool("task_stop", "Stop a local SDK background process", handleSchema),
+                (PluginManager.ContextualToolHandler) plugin::processStop);
+        pm.register(tool("task_delete", "Delete a finished local SDK process handle", handleSchema),
+                (PluginManager.ContextualToolHandler) plugin::processCleanup);
+        pm.register(tool("task_cleanup", "Clean up local SDK background process handles", handleSchema),
+                (PluginManager.ContextualToolHandler) plugin::processCleanup);
+        pm.registerSessionHook(new io.taiyiflow.sdk.hooks.SessionHook() {
+            @Override
+            public void onClose(String sessionId) {
+                plugin.backgroundProcesses.stopSession(sessionId);
+                plugin.backgroundProcesses.cleanupFinished(sessionId);
+            }
+        });
         pm.registerCloseable(plugin);
     }
 

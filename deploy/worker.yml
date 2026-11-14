@@ -24,6 +24,37 @@ execution:
   connect-timeout: PT15S
   drain-timeout: PT30S
   request-timeout: PT30S
+tools:
+  builtin-tools: false
+  allowed-shell-commands: []
+  media: false
+  skills:
+    enabled: false
+    platform-enabled: false
+    # workspace-dir defaults to <workspace>/.snz1dp/skills.
+    # user-dir: /var/lib/taiyiflow/user-skills
+    # compat-dir: /var/lib/taiyiflow/compat-skills
+    default-names: []
+    bundled-resources: []
+    tolerate-platform-failure: true
+    sync-mode: DISABLED
+  browser:
+    mode: DISABLED
+    # HEADLESS and REMOTE_CDP are mutually exclusive alternatives.
+    # mode: HEADLESS
+    # executable-path: /opt/pw-browsers/chromium-1148/chrome-linux/chrome
+    launch-arguments: []
+    action-timeout: PT15S
+    max-pages-per-session: 10
+    max-read-text-characters: 30000
+    max-console-messages: 200
+    max-screenshot-bytes: 1048576
+    execute-js-enabled: false
+    allowed-hosts: []
+    allowed-cidrs: []
+    # mode: REMOTE_CDP
+    # remote-endpoint-secret: TAIYIFLOW_CDP_ENDPOINT
+    # remote-authorization-secret: TAIYIFLOW_CDP_AUTHORIZATION
 extensions:
   identity-validator: your.platform.PlatformWorkerIdentityValidator
   # task-handler: your.platform.BusinessTaskHandler

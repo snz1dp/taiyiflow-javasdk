@@ -84,7 +84,62 @@ public final class DigitalWorkerMain {
         for (String hook : extensions.hooks()) {
             builder.onWorker(instantiate(hook, WorkerHook.class));
         }
+        configureTools(builder, config, auth, secrets);
         return builder.build();
+    }
+
+    private static void configureTools(DigitalWorker.Builder builder, WorkerConfig config, WorkerAuth auth,
+                                       SecretProvider secrets) {
+        WorkerConfig.Tools tools = config.tools();
+        if (tools.builtinTools()) builder.enableBuiltinTools(tools.allowedShellCommands());
+        if (tools.media()) builder.enableMediaUnderstanding();
+        configureBrowser(builder, tools.browser(), secrets);
+        WorkerConfig.Skills skills = tools.skills();
+        if (!skills.enabled()) return;
+        if (skills.syncMode() != null && !"DISABLED".equalsIgnoreCase(skills.syncMode())) {
+            throw new IllegalArgumentException("Only skills.sync-mode=DISABLED is supported by the runtime");
+        }
+        Path workspaceSkills = skills.workspaceDir() == null
+                ? config.workspace().resolve(".snz1dp/skills") : skills.workspaceDir();
+        var rest = new io.taiyiflow.sdk.transport.rest.RestClient(config.baseUrl(), auth::accessToken,
+                config.execution().requestTimeout(), java.util.Map.of());
+        var registry = io.taiyiflow.sdk.core.skill.SkillRegistry.builder()
+                .directory(workspaceSkills, io.taiyiflow.sdk.core.skill.SkillSource.WORKSPACE)
+                .directory(skills.userDir(), io.taiyiflow.sdk.core.skill.SkillSource.USER)
+                .directory(skills.compatDir(), io.taiyiflow.sdk.core.skill.SkillSource.COMPAT)
+                .bundled(DigitalWorkerMain.class.getClassLoader(), skills.bundledResources());
+        var skillClient = new io.taiyiflow.sdk.transport.rest.SkillClient(rest);
+        if (skills.platformEnabled()) registry.platform(skillClient);
+        var supplier = new io.taiyiflow.sdk.core.skill.SkillSupplier(registry.build(),
+                new io.taiyiflow.sdk.core.skill.SkillSupplyPolicy(true, skills.platformEnabled(),
+                        skills.toleratePlatformFailure()));
+        builder.skillSupplier(supplier, skills.defaultNames())
+                .skillManager(new io.taiyiflow.sdk.plugins.skill.SkillManager(
+                        workspaceSkills, skills.userDir(), skillClient));
+    }
+
+    private static void configureBrowser(DigitalWorker.Builder builder, WorkerConfig.Browser config,
+                                         SecretProvider secrets) {
+        if (config.mode() == null || "DISABLED".equalsIgnoreCase(config.mode())) return;
+        var settings = io.taiyiflow.sdk.browser.BrowserSettings.builder();
+        if (config.mode() != null) settings.mode(io.taiyiflow.sdk.browser.BrowserSettings.Mode.valueOf(config.mode()));
+        if (config.executablePath() != null) settings.executablePath(config.executablePath());
+        if (config.launchArguments() != null) settings.launchArguments(config.launchArguments());
+        if (config.actionTimeout() != null) settings.actionTimeout(config.actionTimeout());
+        if (config.maxPagesPerSession() != null) settings.maxPagesPerSession(config.maxPagesPerSession());
+        if (config.maxReadTextCharacters() != null) settings.maxReadTextCharacters(config.maxReadTextCharacters());
+        if (config.maxConsoleMessages() != null) settings.maxConsoleMessages(config.maxConsoleMessages());
+        if (config.maxScreenshotBytes() != null) settings.maxScreenshotBytes(config.maxScreenshotBytes());
+        if (config.executeJsEnabled() != null) settings.executeJsEnabled(config.executeJsEnabled());
+        if (config.allowedHosts() != null) settings.allowedHosts(config.allowedHosts());
+        if (config.allowedCidrs() != null) settings.allowedCidrs(config.allowedCidrs());
+        if (config.remoteEndpointSecret() != null) settings.remoteEndpointSecret(config.remoteEndpointSecret(), secrets::get);
+        if (config.remoteAuthorizationSecret() != null) {
+            settings.remoteHeaderSecret("Authorization", config.remoteAuthorizationSecret(), secrets::get);
+        }
+        var browserSettings = settings.build();
+        builder.agentCustomizer(agent -> io.taiyiflow.sdk.browser.BrowserToolProvider.register(
+                agent.getPluginManager(), agent.getRestClient(), browserSettings));
     }
 
     private static WorkerAuth createAuth(WorkerConfig config, SecretProvider secrets) throws Exception {

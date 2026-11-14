@@ -25,6 +25,14 @@ class PermissionPolicyTest {
         assertEquals(PermissionHook.Decision.ASK, decision(PermissionPolicy.CONFIRM, "shell_exec"));
         assertEquals(PermissionHook.Decision.ASK, decision(PermissionPolicy.CONFIRM, "process_stop"));
         assertEquals(PermissionHook.Decision.ALLOW, decision(PermissionPolicy.CONFIRM, "process_output"));
+        for (String tool : new String[]{"schedule_create", "schedule_update", "schedule_delete",
+                "schedule_toggle", "task_stop", "task_delete", "task_cleanup", "todo_write"}) {
+            assertEquals(PermissionHook.Decision.ASK, decision(PermissionPolicy.CONFIRM, tool), tool);
+        }
+        for (String tool : new String[]{"schedule_list", "schedule_runs", "task_list", "task_output",
+                "glob_files", "session_context", "ask_user", "skill_list", "skill_fetch"}) {
+            assertEquals(PermissionHook.Decision.ALLOW, decision(PermissionPolicy.CONFIRM, tool), tool);
+        }
     }
 
     @Test

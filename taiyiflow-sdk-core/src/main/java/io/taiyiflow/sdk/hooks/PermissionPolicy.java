@@ -13,7 +13,9 @@ public enum PermissionPolicy implements PermissionHook {
     private static final Set<String> MUTATING_TOOLS = Set.of(
             "shell", "bash", "execute_command", "shell_exec", "process_stop", "process_cleanup",
             "task_stop", "task_delete", "task_cleanup", "todo_write", "file_edit",
-            "document_unstructured", "write_file");
+            "document_unstructured", "write_file", "schedule_create", "schedule_update",
+            "skill_create", "skill_upload", "skill_delete",
+            "schedule_delete", "schedule_toggle");
 
     @Override
     public CompletableFuture<Decision> onPermission(String sessionId, ToolCall toolCall) {

@@ -2,16 +2,21 @@ package io.taiyiflow.sdk;
 
 import io.taiyiflow.sdk.collaboration.CollaborationPlugin;
 import io.taiyiflow.sdk.core.dispatch.ToolRuntime;
+import io.taiyiflow.sdk.core.fs.WorkspacePaths;
 import io.taiyiflow.sdk.core.plugin.PluginManager;
 import io.taiyiflow.sdk.core.report.ReportOutbox;
 import io.taiyiflow.sdk.core.session.AgentSessionImpl;
 import io.taiyiflow.sdk.core.session.ClientIdentity;
 import io.taiyiflow.sdk.core.session.SessionManager;
+import io.taiyiflow.sdk.core.skill.SkillSupplier;
 import io.taiyiflow.sdk.hooks.PermissionHook;
 import io.taiyiflow.sdk.hooks.PermissionPolicy;
 import io.taiyiflow.sdk.hooks.SessionHook;
 import io.taiyiflow.sdk.hooks.StreamHook;
 import io.taiyiflow.sdk.hooks.ToolExecutionHook;
+import io.taiyiflow.sdk.transport.envelope.FlowMetadata;
+import io.taiyiflow.sdk.transport.rest.FlowMetadataClient;
+import io.taiyiflow.sdk.transport.rest.FlowRunClient;
 import io.taiyiflow.sdk.transport.rest.CollaborationTaskClient;
 import io.taiyiflow.sdk.transport.rest.ConfigClient;
 import io.taiyiflow.sdk.transport.rest.ExecutionController;
@@ -26,6 +31,7 @@ import io.taiyiflow.sdk.transport.stream.StreamProtocolResolver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -90,6 +96,12 @@ public class TaiyiAgent {
     private final int recoveryMaxAttempts;
     private final boolean autoRestartOnExecutionLoss;
     private final CollaborationPlugin collaborationPlugin;
+    private final Path workspace;
+    private final FlowMetadataClient flowMetadataClient;
+    private final SkillSupplier skillSupplier;
+    private final List<String> defaultSkillNames;
+    private volatile FlowMetadata flowMetadata;
+    private final Object metadataLock = new Object();
 
     private TaiyiAgent(Builder builder) {
         this.baseUrl = builder.baseUrl;
@@ -123,6 +135,10 @@ public class TaiyiAgent {
                 ? new ToolRuntime(builder.toolRuntimeConfig) : builder.toolRuntime;
         this.restClient = builder.restClient != null ? builder.restClient
                 : new RestClient(baseUrl, accessToken, requestTimeout, credentialHeaders);
+        this.workspace = builder.workspace == null ? null : builder.workspace.toAbsolutePath().normalize();
+        this.flowMetadataClient = new FlowMetadataClient(restClient);
+        this.skillSupplier = builder.skillSupplier;
+        this.defaultSkillNames = List.copyOf(builder.defaultSkillNames);
         this.executionController = new ExecutionController(restClient, clientId, deviceId);
         this.streamProtocolResolver = new StreamProtocolResolver(restClient, builder.streamProtocol);
 
@@ -226,6 +242,39 @@ public class TaiyiAgent {
 
     public FileClient files() {
         return new FileClient(restClient);
+    }
+
+    public FlowRunClient flowRuns() {
+        return new FlowRunClient(restClient);
+    }
+
+    public FlowMetadata getFlowMetadata() throws Exception {
+        FlowMetadata current = flowMetadata;
+        if (current != null) {
+            return current;
+        }
+        synchronized (metadataLock) {
+            if (flowMetadata == null) {
+                flowMetadata = flowMetadataClient.get(flowId);
+            }
+            return flowMetadata;
+        }
+    }
+
+    public FlowMetadata refreshFlowMetadata() throws Exception {
+        synchronized (metadataLock) {
+            FlowMetadata refreshed = flowMetadataClient.get(flowId);
+            flowMetadata = refreshed;
+            return refreshed;
+        }
+    }
+
+    public Path getWorkspace() {
+        return workspace;
+    }
+
+    public Path workspaceFor(String flowId, String sessionId) throws java.io.IOException {
+        return WorkspacePaths.sessionWorkspace(workspace, flowId, sessionId);
     }
 
     public McpClient mcpServers() {
@@ -338,6 +387,14 @@ public class TaiyiAgent {
         return flowAdapter;
     }
 
+    public SkillSupplier getSkillSupplier() {
+        return skillSupplier;
+    }
+
+    public List<String> getDefaultSkillNames() {
+        return defaultSkillNames;
+    }
+
     public RecoveryPolicy getRecoveryPolicy() {
         return recoveryPolicy;
     }
@@ -365,6 +422,8 @@ public class TaiyiAgent {
         private String baseUrl;
         private Supplier<String> accessToken;
         private String flowId;
+        private boolean useServerDefaultFlow;
+        private Path workspace;
         private String clientId;
         private String deviceId;
         private Duration connectTimeout = Duration.ofSeconds(10);
@@ -373,6 +432,8 @@ public class TaiyiAgent {
         private int eventQueueCapacity = 1024;
         private ToolRuntime toolRuntime;
         private RestClient restClient;
+        private SkillSupplier skillSupplier;
+        private List<String> defaultSkillNames = List.of();
         private ToolRuntime.Config toolRuntimeConfig = ToolRuntime.Config.defaults();
         private boolean toolRuntimeConfigSet;
         private boolean sseFallbackEnabled = true;
@@ -417,6 +478,16 @@ public class TaiyiAgent {
             return this;
         }
 
+        public Builder useServerDefaultFlow() {
+            this.useServerDefaultFlow = true;
+            return this;
+        }
+
+        public Builder workspace(Path workspace) {
+            this.workspace = java.util.Objects.requireNonNull(workspace, "workspace");
+            return this;
+        }
+
         public Builder clientId(String clientId) {
             this.clientId = clientId;
             return this;
@@ -440,6 +511,12 @@ public class TaiyiAgent {
         /** Inject worker-owned runtime resources; the built agent will not close them. */
         public Builder toolRuntime(ToolRuntime runtime) {
             this.toolRuntime = java.util.Objects.requireNonNull(runtime, "toolRuntime");
+            return this;
+        }
+
+        public Builder skillSupplier(SkillSupplier supplier, List<String> defaultSkillNames) {
+            this.skillSupplier = supplier;
+            this.defaultSkillNames = defaultSkillNames == null ? List.of() : List.copyOf(defaultSkillNames);
             return this;
         }
 
@@ -596,8 +673,20 @@ public class TaiyiAgent {
             if (accessToken == null) {
                 throw new IllegalArgumentException("apiKey or accessToken is required");
             }
+            if (useServerDefaultFlow && flowId != null && !flowId.isBlank()) {
+                throw new IllegalArgumentException("flowId and useServerDefaultFlow are mutually exclusive");
+            }
+            if (useServerDefaultFlow) {
+                RestClient configRest = restClient != null ? restClient
+                        : new RestClient(baseUrl, accessToken, requestTimeout, credentialHeaders);
+                try {
+                    flowId = new ConfigClient(configRest).getServiceConfig().defaultFlowId();
+                } catch (Exception exception) {
+                    throw new IllegalArgumentException("Unable to resolve the server default flow", exception);
+                }
+            }
             if (flowId == null || flowId.isBlank()) {
-                throw new IllegalArgumentException("flowId is required");
+                throw new IllegalArgumentException("flowId or useServerDefaultFlow is required");
             }
             if (toolRuntime != null && toolRuntimeConfigSet) {
                 throw new IllegalArgumentException(

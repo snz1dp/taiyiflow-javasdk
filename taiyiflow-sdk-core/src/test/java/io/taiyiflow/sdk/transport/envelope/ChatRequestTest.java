@@ -87,6 +87,24 @@ class ChatRequestTest {
     }
 
     @Test
+    void serializesClientSkillPackages() throws Exception {
+        ChatRequest request = new ChatRequest("Hi", "s-3");
+        ClientSkillDefinition skill = new ClientSkillDefinition("demo", "demo", "description", null, null,
+                List.of(), List.of(), null, "summary", "body", false, null, "demo", null,
+                "workspace", "demo", true, "1");
+        request.setClientSkillPackages(List.of(new ClientSkillPackage("taiyiflow-workspace", null, false, List.of(skill))));
+        request.setRequestedSkillNames(List.of("demo"));
+
+        var json = mapper.readTree(mapper.writeValueAsString(request));
+        assertEquals("demo", json.required("requested_skill_names").get(0).asText());
+        var serialized = json.required("client_skill_packages").get(0);
+        assertEquals("taiyiflow-workspace", serialized.required("package_name").asText());
+        assertFalse(serialized.has("root_dir"));
+        assertFalse(serialized.get("skills").get(0).has("path"));
+        assertEquals("demo", serialized.get("skills").get(0).required("skill_dir").asText());
+    }
+
+    @Test
     void omitsNullOptionalFields() throws Exception {
         String json = mapper.writeValueAsString(new ChatRequest("Hi", "s-3"));
         assertFalse(json.contains("run_id"));

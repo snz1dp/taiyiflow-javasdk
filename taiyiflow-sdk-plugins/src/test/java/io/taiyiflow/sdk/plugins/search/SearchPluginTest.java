@@ -105,10 +105,31 @@ class SearchPluginTest {
     }
 
     @Test
+    void globReturnsOnlyRelativeSandboxFilesAndDoesNotFollowLinks() throws Exception {
+        Files.createDirectory(tempDir.resolve("sub"));
+        Files.writeString(tempDir.resolve("root.txt"), "root");
+        Files.writeString(tempDir.resolve("sub/nested.txt"), "nested");
+        Files.writeString(outside.resolve("secret.txt"), "secret");
+        Files.createSymbolicLink(tempDir.resolve("linked.txt"), outside.resolve("secret.txt"));
+        SearchPlugin plugin = new SearchPlugin(tempDir);
+
+        ToolResult result = plugin.glob(new ToolCall("1", "glob_files",
+                mapper.createObjectNode().put("pattern", "**/*.txt")));
+
+        assertTrue(result.isSuccess(), result::getError);
+        assertTrue(result.getResult().get("files").toString().contains("nested.txt"));
+        assertFalse(result.getResult().get("files").toString().contains("secret.txt"));
+        assertFalse(result.getResult().get("files").toString().contains("linked.txt"));
+        assertFalse(plugin.glob(new ToolCall("2", "glob_files",
+                mapper.createObjectNode().put("path", "../"))).isSuccess());
+    }
+
+    @Test
     void registerAddsAliases() {
         PluginManager pm = new PluginManager();
         SearchPlugin.register(pm, tempDir);
         assertTrue(pm.hasHandler("search"));
         assertTrue(pm.hasHandler("grep"));
+        assertTrue(pm.hasHandler("glob_files"));
     }
 }

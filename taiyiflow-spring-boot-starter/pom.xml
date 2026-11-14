@@ -31,6 +31,12 @@
         </dependency>
         <dependency>
             <groupId>io.taiyiflow</groupId>
+            <artifactId>taiyiflow-sdk-browser</artifactId>
+            <version>${project.version}</version>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>io.taiyiflow</groupId>
             <artifactId>taiyiflow-sdk-worker</artifactId>
             <version>${project.version}</version>
         </dependency>

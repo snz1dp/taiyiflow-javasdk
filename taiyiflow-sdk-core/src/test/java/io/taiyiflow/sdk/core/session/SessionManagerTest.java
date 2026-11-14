@@ -3,6 +3,7 @@ package io.taiyiflow.sdk.core.session;
 import io.taiyiflow.sdk.AgentSession;
 import io.taiyiflow.sdk.TaiyiAgent;
 import io.taiyiflow.sdk.core.state.SessionState;
+import io.taiyiflow.sdk.hooks.SessionHook;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -148,6 +149,44 @@ class SessionManagerTest {
     void awaitTimeoutReturnsFalseForPendingSession() throws Exception {
         AgentSession session = sessionManager.createSession(agent, "pending");
         assertFalse(session.await(Duration.ofMillis(10)));
+    }
+
+    @Test
+    void detachDoesNotCloseButExplicitRemovalDoes() {
+        AgentSessionImpl session = (AgentSessionImpl) sessionManager.createSession(agent, "detached");
+        AtomicInteger closes = new AtomicInteger();
+        session.onLifecycle(new SessionHook() {
+            @Override
+            public void onClose(String sessionId) {
+                closes.incrementAndGet();
+            }
+        });
+
+        sessionManager.detachSession("detached", session);
+        assertEquals(0, closes.get());
+        assertNull(sessionManager.getSession("detached"));
+
+        sessionManager.removeSession("detached");
+        sessionManager.removeSession("detached");
+        assertEquals(1, closes.get());
+    }
+
+    @Test
+    void shutdownClosesDetachedSessionExactlyOnce() {
+        AgentSessionImpl session = (AgentSessionImpl) sessionManager.createSession(agent, "detached");
+        AtomicInteger closes = new AtomicInteger();
+        session.onLifecycle(new SessionHook() {
+            @Override
+            public void onClose(String sessionId) {
+                closes.incrementAndGet();
+            }
+        });
+        sessionManager.detachSession("detached", session);
+
+        sessionManager.shutdownAll();
+        sessionManager.shutdownAll();
+
+        assertEquals(1, closes.get());
     }
 
     @Test

@@ -9,11 +9,15 @@ import io.taiyiflow.sdk.TaiyiAgent;
 import io.taiyiflow.sdk.core.dispatch.ApprovalBroker;
 import io.taiyiflow.sdk.core.dispatch.ToolDispatcher;
 import io.taiyiflow.sdk.core.dispatch.ToolExecutionContext;
+import io.taiyiflow.sdk.core.plugin.ToolCatalog;
 import io.taiyiflow.sdk.core.report.CheckpointToolResultsAdapter;
 import io.taiyiflow.sdk.core.report.ClientToolResultAdapter;
 import io.taiyiflow.sdk.core.report.ReportAlert;
 import io.taiyiflow.sdk.core.report.ReportOutbox;
 import io.taiyiflow.sdk.core.state.SessionState;
+import io.taiyiflow.sdk.core.skill.SkillQuery;
+import io.taiyiflow.sdk.core.skill.SkillSelection;
+import io.taiyiflow.sdk.core.skill.SkillSupplySnapshot;
 import io.taiyiflow.sdk.core.subtask.SubtaskCapabilitySnapshot;
 import io.taiyiflow.sdk.hooks.PermissionHook;
 import io.taiyiflow.sdk.hooks.SessionHook;
@@ -22,6 +26,7 @@ import io.taiyiflow.sdk.hooks.ToolExecutionHook;
 import io.taiyiflow.sdk.transport.envelope.AgentLoopControlResult;
 import io.taiyiflow.sdk.transport.envelope.ChatRequest;
 import io.taiyiflow.sdk.transport.envelope.ClientToolCallParser;
+import io.taiyiflow.sdk.transport.envelope.FlowMetadata;
 import io.taiyiflow.sdk.transport.envelope.ResumableCheckpoint;
 import io.taiyiflow.sdk.transport.envelope.StreamEvent;
 import io.taiyiflow.sdk.transport.envelope.ToolCall;
@@ -77,6 +82,7 @@ public class AgentSessionImpl implements AgentSession {
     private final RunContext runContext = new RunContext();
     private final ApprovalBroker approvalBroker = new ApprovalBroker();
     private final AtomicReference<SessionState> state = new AtomicReference<>(SessionState.IDLE);
+    private final AtomicBoolean lifecycleClosed = new AtomicBoolean(false);
     private final AtomicBoolean fallbackUsed = new AtomicBoolean();
     private final List<StreamHook> streamHooks = new ArrayList<>();
     private final List<ToolExecutionHook> toolHooks = new ArrayList<>();
@@ -157,6 +163,7 @@ public class AgentSessionImpl implements AgentSession {
             }
             applyClientIdentity(request);
             request.setExecutionMode("start");
+            prepareNewStart(request);
             if (request.getMessageId() == null) {
                 request.setMessageId(newId());
             }
@@ -269,11 +276,14 @@ public class AgentSessionImpl implements AgentSession {
         request.setTweaks(runContext.getLastTweaks());
         request.setInputFiles(runContext.getLastInputFiles());
         request.setRequestType(runContext.getRequestType());
+        request.setRequestedSkillNames(runContext.getSkillSupply().requestedSkillNames());
+        request.setClientSkillPackages(runContext.getSkillSupply().packages());
         if (agent.getFlowAdapter() != null) {
             agent.getFlowAdapter().customize(request);
         }
         applyClientIdentity(request);
         request.setExecutionMode("start");
+        prepareNewStart(request);
         request.setRunId(newId());
         request.setMessageId(newId());
         request.setSubscriptionId(newId());
@@ -385,6 +395,9 @@ public class AgentSessionImpl implements AgentSession {
         ChatRequest request = new ChatRequest("", sessionId);
         request.setRunId(runContext.getRunId());
         request.setExecutionMode(mode);
+        request.setAvailableTools(runContext.getAvailableTools());
+        request.setRequestedSkillNames(runContext.getSkillSupply().requestedSkillNames());
+        request.setClientSkillPackages(runContext.getSkillSupply().packages());
         applyClientIdentity(request);
         return request;
     }
@@ -395,9 +408,50 @@ public class AgentSessionImpl implements AgentSession {
         request.setClientType(CLIENT_TYPE);
     }
 
+    private void prepareNewStart(ChatRequest request) {
+        try {
+            boolean automatic = request.getAvailableTools() == null
+                    && !agent.getPluginManager().getDefinitions().isEmpty();
+            boolean needsMetadata = automatic;
+            if (request.getAvailableTools() != null) {
+                needsMetadata = request.getAvailableTools().stream().map(tool -> tool.path("name").asText())
+                        .map(agent.getPluginManager()::getDefinition)
+                        .filter(java.util.Objects::nonNull)
+                        .anyMatch(definition -> definition.getRequiredFeature() != null);
+            }
+            FlowMetadata metadata = needsMetadata ? agent.getFlowMetadata() : null;
+            String mode = requestMode(request.getRequestType());
+            if (automatic) {
+                request.setAvailableTools(ToolCatalog.automatic(agent.getPluginManager(), metadata, mode,
+                        null, agent.getPermissionPolicy()));
+            } else if (request.getAvailableTools() != null) {
+                request.setAvailableTools(ToolCatalog.explicit(agent.getPluginManager(), request.getAvailableTools(),
+                        metadata, mode, null, agent.getPermissionPolicy()));
+            }
+            if (agent.getSkillSupplier() != null && request.getClientSkillPackages() == null) {
+                Set<String> toolNames = request.getAvailableTools() == null ? null : request.getAvailableTools().stream()
+                        .map(tool -> tool.path("name").asText()).collect(java.util.stream.Collectors.toSet());
+                SkillSelection selection = new SkillSelection(request.getRequestedSkillNames(),
+                        agent.getDefaultSkillNames(), true, null);
+                SkillSupplySnapshot supply = agent.getSkillSupplier().supply(
+                        new SkillQuery(agent.getFlowId(), sessionId, mode,
+                                agent.getFlowId() + "\0" + sessionId, toolNames), selection);
+                request.setClientSkillPackages(supply.packages());
+                request.setRequestedSkillNames(supply.requestedSkillNames());
+            }
+            io.taiyiflow.sdk.core.skill.SkillPackageValidator.validate(request.getClientSkillPackages());
+        } catch (Exception exception) {
+            throw new IllegalStateException("Unable to prepare first-frame tool definitions for flow "
+                    + agent.getFlowId(), exception);
+        }
+    }
+
     private AgentSession startExecution(ChatRequest request, SessionState connectingState,
                                         SessionState previous, boolean notifyStart, boolean refreshProtocol,
                                         boolean preserveCompletion) {
+        if (lifecycleClosed.get()) {
+            throw new IllegalStateException("Session is closed");
+        }
         long generation = runContext.nextRecoveryGeneration();
         state.set(connectingState);
         closeStreamResources();
@@ -505,7 +559,7 @@ public class AgentSessionImpl implements AgentSession {
                     closeLocalResources();
                     notifyStreamClose("Paused");
                     completionLatch.countDown();
-                    sessionManager.removeSession(sessionId, this);
+                    sessionManager.detachSession(sessionId, this);
                 }
                 return result;
             } catch (Exception e) {
@@ -531,7 +585,7 @@ public class AgentSessionImpl implements AgentSession {
                 closeLocalResources();
                 notifyLifecycleInterrupt("Cancelled by user");
                 completionLatch.countDown();
-                sessionManager.removeSession(sessionId, this);
+                sessionManager.detachSession(sessionId, this);
             }
             return result;
         }
@@ -557,7 +611,7 @@ public class AgentSessionImpl implements AgentSession {
         closeLocalResources();
         notifyLifecycleInterrupt("User interrupted");
         completionLatch.countDown();
-        sessionManager.removeSession(sessionId, this);
+        sessionManager.detachSession(sessionId, this);
     }
 
     private void closeLocalResources() {
@@ -717,6 +771,27 @@ public class AgentSessionImpl implements AgentSession {
                 hook.onFinish(sessionId);
             } catch (Exception e) {
                 log.warn("SessionHook.onFinish failed", e);
+            }
+        }
+    }
+
+    void notifyLifecycleClose() {
+        if (!lifecycleClosed.compareAndSet(false, true)) {
+            return;
+        }
+        agent.getPluginManager().notifySessionClose(sessionId);
+        for (SessionHook hook : sessionHooks) {
+            try {
+                hook.onClose(sessionId);
+            } catch (Exception e) {
+                log.warn("SessionHook.onClose failed", e);
+            }
+        }
+        for (SessionHook hook : agent.getGlobalSessionHooks()) {
+            try {
+                hook.onClose(sessionId);
+            } catch (Exception e) {
+                log.warn("SessionHook.onClose failed", e);
             }
         }
     }
@@ -913,8 +988,9 @@ public class AgentSessionImpl implements AgentSession {
         }
         SessionState current = state.get();
         if (current == SessionState.INTERRUPTED || current == SessionState.CANCELLED
-                || current == SessionState.PAUSED || current == SessionState.DISCONNECTED
-                || current == SessionState.DONE || current == SessionState.ERROR) {
+                || current == SessionState.PAUSED
+                || current == SessionState.DISCONNECTED || current == SessionState.DONE
+                || current == SessionState.ERROR) {
             return;
         }
         log.info("Session {} stream closed: {}", sessionId, reason);
@@ -940,8 +1016,9 @@ public class AgentSessionImpl implements AgentSession {
         failResumeSubmission(error);
         SessionState current = state.get();
         if (current == SessionState.INTERRUPTED || current == SessionState.CANCELLED
-                || current == SessionState.PAUSED || current == SessionState.DISCONNECTED
-                || current == SessionState.DONE || current == SessionState.ERROR) {
+                || current == SessionState.PAUSED
+                || current == SessionState.DISCONNECTED || current == SessionState.DONE
+                || current == SessionState.ERROR) {
             return;
         }
         log.error("Session {} stream error", sessionId, error);
@@ -956,7 +1033,13 @@ public class AgentSessionImpl implements AgentSession {
         if (!isGenerationCurrent(generation)) {
             return;
         }
-        state.set(SessionState.DISCONNECTED);
+        SessionState current = state.get();
+        if (current == SessionState.PAUSED
+                || current == SessionState.INTERRUPTED || current == SessionState.CANCELLED
+                || current == SessionState.DONE || current == SessionState.ERROR
+                || !state.compareAndSet(current, SessionState.DISCONNECTED)) {
+            return;
+        }
         stopStreamWatchdog();
         StreamClient.StreamHandle handle = streamHandle;
         if (handle != null) {
@@ -1043,7 +1126,7 @@ public class AgentSessionImpl implements AgentSession {
                         runContext.nextRecoveryGeneration();
                         notifyLifecycleInterrupt("Cancelled on server");
                         completionLatch.countDown();
-                        sessionManager.removeSession(sessionId, this);
+                        sessionManager.detachSession(sessionId, this);
                         return;
                     }
 
@@ -1126,11 +1209,14 @@ public class AgentSessionImpl implements AgentSession {
         request.setTweaks(runContext.getLastTweaks());
         request.setInputFiles(runContext.getLastInputFiles());
         request.setRequestType(runContext.getRequestType());
+        request.setRequestedSkillNames(runContext.getSkillSupply().requestedSkillNames());
+        request.setClientSkillPackages(runContext.getSkillSupply().packages());
         if (agent.getFlowAdapter() != null) {
             agent.getFlowAdapter().customize(request);
         }
         applyClientIdentity(request);
         request.setExecutionMode("start");
+        prepareNewStart(request);
         request.setRunId(newId());
         request.setMessageId(newId());
         request.setSubscriptionId(newId());
@@ -1147,7 +1233,7 @@ public class AgentSessionImpl implements AgentSession {
         approvalBroker.denyAll("Execution requires user resume");
         notifyStreamClose("Execution requires user resume");
         completionLatch.countDown();
-        sessionManager.removeSession(sessionId, this);
+        sessionManager.detachSession(sessionId, this);
     }
 
     private void completeDone(long generation, String reason) {
@@ -1160,7 +1246,7 @@ public class AgentSessionImpl implements AgentSession {
         notifyStreamClose(reason);
         notifyLifecycleFinish();
         completionLatch.countDown();
-        sessionManager.removeSession(sessionId, this);
+        sessionManager.detachSession(sessionId, this);
     }
 
     private void failRecovery(long generation, Throwable error) {
@@ -1172,7 +1258,7 @@ public class AgentSessionImpl implements AgentSession {
         approvalBroker.denyAll("Session execution failed");
         notifyStreamError(error);
         completionLatch.countDown();
-        sessionManager.removeSession(sessionId, this);
+        sessionManager.detachSession(sessionId, this);
     }
 
     private static boolean isNonRecoverableClose(String reason) {
@@ -1279,7 +1365,7 @@ public class AgentSessionImpl implements AgentSession {
                 if (agent.getToolRuntime().getReportOutbox().find(entry.getId()).isEmpty()) {
                     state.set(SessionState.DONE);
                     completionLatch.countDown();
-                    sessionManager.removeSession(sessionId, this);
+                    sessionManager.detachSession(sessionId, this);
                     return;
                 }
                 runContext.update(checkpoint, generation);
@@ -1349,6 +1435,7 @@ public class AgentSessionImpl implements AgentSession {
                     .runId(call.getRunId())
                     .taskId(call.getId())
                     .messageId(call.getMessageId())
+                    .workspace(agent.getWorkspace() == null ? null : agent.workspaceFor(agent.getFlowId(), sessionId))
                     .requestMode(requestMode(runContext.getRequestType()))
                     .capabilities(runContext.getCapabilities())
                     .cancellation(toolCancellation)

@@ -12,11 +12,11 @@
 </dependency>
 ```
 
-自动装配注册了两个配置类：`TaiyiFlowAutoConfiguration` 与 `DigitalWorkerAutoConfiguration`。
+自动装配注册三个配置类：`TaiyiFlowAutoConfiguration`、`TaiyiFlowBrowserAutoConfiguration` 与 `DigitalWorkerAutoConfiguration`。浏览器配置以 `@ConditionalOnClass` 隔离，未引入可选浏览器模块时不影响基础装配。
 
 ## TaiyiAgent 装配
 
-**条件**：`taiyiflow.base-url`、`taiyiflow.api-key`、`taiyiflow.flow-id` 三键齐备才装配；产出 `TaiyiAgent` Bean（`destroyMethod="shutdown"`，`@ConditionalOnMissingBean` 可被自定义 Bean 覆盖）。
+**条件**：`taiyiflow.base-url`、`taiyiflow.api-key` 齐备，且显式设置 `taiyiflow.flow-id` 或 `taiyiflow.use-default-flow=true` 才装配；产出 `TaiyiAgent` Bean（`destroyMethod="shutdown"`，`@ConditionalOnMissingBean` 可被自定义 Bean 覆盖）。
 
 ### 配置键（prefix = taiyiflow）
 
@@ -24,7 +24,8 @@
 taiyiflow:
   base-url: http://localhost:8080        # 必填（装配条件）
   api-key: ${TAIYIFLOW_API_KEY}          # 必填（装配条件）
-  flow-id: my-agent-flow                 # 必填（装配条件）
+  flow-id: my-agent-flow                 # 与 use-default-flow=true 二选一
+  use-default-flow: false                # true 时使用平台 /config 的 default_flow_id
   connect-timeout: 10s
   request-timeout: 30s
   max-sessions: 100
@@ -37,13 +38,40 @@ taiyiflow:
   auto-restart-on-execution-loss: true
   permission-timeout: 300s               # 0 永不超时；非零范围 10–6000s
   collaboration-enabled: false           # true 时 build 即建立协同 WS
-  sandbox-root: /tmp/taiyiflow-sandbox   # 自动创建目录
+  sandbox-root: /tmp/taiyiflow-sandbox   # 自动创建目录，同时作为会话 workspace
   allowed-shell-commands: [ls, cat, echo, date, whoami, pwd]
   plugins:
     shell: true                          # ShellPlugin（带命令白名单）
     files: true                          # FilePlugin
     search: true                         # SearchPlugin
+    media: false                         # 文档/图片/音频/视频理解，默认关闭
+  skills:
+    enabled: false                       # 本地技能发现与首帧供应，默认关闭
+    platform-enabled: false              # 平台技能发现/正文获取，默认关闭
+    workspace-dir: /var/lib/taiyiflow/skills  # 缺省 <sandbox-root>/.snz1dp/skills
+    # user-dir: /var/lib/taiyiflow/user-skills
+    # compat-dir: /var/lib/taiyiflow/compat-skills
+    default-names: []                    # 默认全文技能；其余发现项发摘要
+    bundled-resources: []                # classpath 技能资源目录
+    tolerate-platform-failure: true
+  browser:
+    mode: DISABLED                       # DISABLED / HEADLESS / REMOTE_CDP
+    # executable-path: /opt/pw-browsers/chromium-1148/chrome-linux/chrome
+    launch-arguments: []
+    action-timeout: 15s
+    max-pages-per-session: 10
+    max-read-text-characters: 30000
+    max-console-messages: 200
+    max-screenshot-bytes: 1048576
+    execute-js-enabled: false
+    allowed-hosts: []
+    allowed-cidrs: []
+    # remote-endpoint: ${TAIYIFLOW_CDP_ENDPOINT}
+    # remote-headers:
+    #   Authorization: ${TAIYIFLOW_CDP_AUTHORIZATION}
 ```
+
+浏览器需另行引入 `io.taiyiflow:taiyiflow-sdk-browser:1.0.0-SNAPSHOT`。HEADLESS 与 REMOTE_CDP 二选一；`allowed-hosts` / `allowed-cidrs` 是访问边界，不能用宽泛公网规则替代业务白名单。远程 endpoint 与 Authorization 推荐通过环境变量占位注入，配置元数据和日志不得输出实际值。技能只提供提示内容，不自动扩大 available_tools、审批、沙盒或网络权限；`skill_create/upload/delete` 属于写操作，仍走 PermissionHook。
 
 ### 钩子（Hook）Bean 自动挂载
 

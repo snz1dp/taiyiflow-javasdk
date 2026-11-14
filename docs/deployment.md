@@ -35,6 +35,8 @@ worker 模块使用 maven-shade-plugin 产出 classifier 为 `all` 的可执行�
 - 预建目录：`/app/lib`（业务适配器）、`/config`、`/var/lib/taiyiflow/worker`、`/var/lib/taiyiflow/runtime-state`、`/var/lib/taiyiflow-credentials`。
 - `ENV TAIYIFLOW_WORKER_CONFIG=/config/worker.yml`；`STOPSIGNAL SIGTERM`。
 - ENTRYPOINT：`java -cp /app/worker.jar:/app/lib/* io.taiyiflow.sdk.worker.DigitalWorkerMain`。
+- 默认 `INSTALL_CHROMIUM=false`，保持基础镜像精简；无头浏览器镜像显式执行 `docker build --build-arg INSTALL_CHROMIUM=true ...`，构建阶段按 Playwright 1.49.0 安装匹配 Chromium 与系统依赖。
+- `PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers` 固定浏览器目录；运行期不静默下载，默认参数不包含 `--no-sandbox`。需要无头浏览器时使用预装镜像，不以启动时联网下载兜底。
 
 ## 本地运行
 
@@ -102,6 +104,34 @@ outbox:
   max-entry-bytes: 1048576                    # 默认 1MiB
   max-total-bytes: 16777216                   # 默认 16MiB
   max-retries: 32                             # 默认 32
+tools:
+  builtin-tools: false                        # Shell/File/Search 默认不注册
+  allowed-shell-commands: []                  # builtin-tools=true 时仍需精确白名单
+  media: false                                # 文档/图片/音频/视频理解
+  skills:
+    enabled: false
+    platform-enabled: false
+    # workspace-dir: /var/lib/taiyiflow/skills # 缺省 <workspace>/.snz1dp/skills
+    # user-dir: /var/lib/taiyiflow/user-skills # 仅显式配置才扫描
+    # compat-dir: /var/lib/taiyiflow/compat-skills
+    default-names: []
+    bundled-resources: []
+    tolerate-platform-failure: true
+    sync-mode: DISABLED                       # 配置化运行时当前仅支持 DISABLED
+  browser:
+    mode: DISABLED                            # DISABLED | HEADLESS | REMOTE_CDP
+    # executable-path: /opt/pw-browsers/chromium-1148/chrome-linux/chrome
+    launch-arguments: []
+    action-timeout: PT15S
+    max-pages-per-session: 10
+    max-read-text-characters: 30000
+    max-console-messages: 200
+    max-screenshot-bytes: 1048576
+    execute-js-enabled: false
+    allowed-hosts: []
+    allowed-cidrs: []
+    # remote-endpoint-secret: TAIYIFLOW_CDP_ENDPOINT       # Secret 名称，不是 URL
+    # remote-authorization-secret: TAIYIFLOW_CDP_AUTHORIZATION
 extensions:
   identity-validator: your.platform.PlatformWorkerIdentityValidator  # 必填类名
   # worker-registrar: your.platform.PlatformWorkerRegistrar          # 可选
@@ -119,6 +149,13 @@ extensions:
 - 业务适配器 JAR 挂载到 `/app/lib`，由 ENTRYPOINT 的 `-cp /app/worker.jar:/app/lib/*` 纳入类路径。
 - `identity-validator` 必填；其余键非空白才加载；类型不匹配或加载失败抛 `Unable to load <Type>: <className>`。
 - 密钥只配置环境变量名称（`token-secret`），真实令牌经环境变量/密钥（Secret）注入。
+
+### 工具、技能与浏览器边界
+
+- 内置工具、媒体理解、技能供应和浏览器均默认关闭；只启用当前 worker 实际使用的能力，并同步收敛 `identity.abilities` 与审批策略。
+- 技能目录与 workspace/state/credentials 分离管理；首帧只发送逻辑相对目录和技能内容，不发送本机绝对路径。技能快照不写 command_payload 或长期结果库。
+- HEADLESS 使用构建期预装的 Chromium；REMOTE_CDP 的 endpoint/Authorization 分别通过 `remote-endpoint-secret` / `remote-authorization-secret` 指向 Secret 名称。两种模式互斥。
+- 浏览器白名单为空不等于开放公网；上线前必须配置精确主机和必要 CIDR。崩溃、断连、超时后只报告状态，不自动重放 click/type/navigate/upload/JS，也不接管已有用户标签或关闭外部 Chrome。
 
 ## 运行约束与恢复语义
 

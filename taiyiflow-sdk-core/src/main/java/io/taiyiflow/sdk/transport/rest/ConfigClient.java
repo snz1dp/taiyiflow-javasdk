@@ -12,4 +12,8 @@ public class ConfigClient {
     public JsonNode get() throws Exception {
         return rest.get("/api/v1/config");
     }
+
+    public ServiceConfig getServiceConfig() throws Exception {
+        return new ServiceConfig(get());
+    }
 }

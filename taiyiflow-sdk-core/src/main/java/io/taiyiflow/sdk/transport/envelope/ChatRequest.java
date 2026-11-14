@@ -17,6 +17,12 @@ public class ChatRequest {
     @JsonProperty("input_value")
     private String inputValue;
 
+    @JsonProperty("input_type")
+    private String inputType;
+
+    @JsonProperty("output_type")
+    private String outputType;
+
     @JsonProperty("session_id")
     private String sessionId;
 
@@ -28,6 +34,9 @@ public class ChatRequest {
 
     @JsonProperty("execution_mode")
     private String executionMode;
+
+    @JsonProperty("async")
+    private Boolean async;
 
     @JsonProperty("execution_attempt_id")
     private String executionAttemptId;
@@ -77,6 +86,9 @@ public class ChatRequest {
     @JsonProperty("requested_skill_names")
     private List<String> requestedSkillNames;
 
+    @JsonProperty("client_skill_packages")
+    private List<ClientSkillPackage> clientSkillPackages;
+
     @JsonProperty("available_tools")
     private List<JsonNode> availableTools;
 
@@ -106,6 +118,22 @@ public class ChatRequest {
 
     public void setInputValue(String inputValue) {
         this.inputValue = inputValue;
+    }
+
+    public String getInputType() {
+        return inputType;
+    }
+
+    public void setInputType(String inputType) {
+        this.inputType = inputType;
+    }
+
+    public String getOutputType() {
+        return outputType;
+    }
+
+    public void setOutputType(String outputType) {
+        this.outputType = outputType;
     }
 
     public String getSessionId() {
@@ -138,6 +166,14 @@ public class ChatRequest {
 
     public void setExecutionMode(String executionMode) {
         this.executionMode = executionMode;
+    }
+
+    public Boolean getAsync() {
+        return async;
+    }
+
+    public void setAsync(Boolean async) {
+        this.async = async;
     }
 
     public String getExecutionAttemptId() {
@@ -266,6 +302,14 @@ public class ChatRequest {
 
     public void setRequestedSkillNames(List<String> requestedSkillNames) {
         this.requestedSkillNames = requestedSkillNames;
+    }
+
+    public List<ClientSkillPackage> getClientSkillPackages() {
+        return clientSkillPackages;
+    }
+
+    public void setClientSkillPackages(List<ClientSkillPackage> clientSkillPackages) {
+        this.clientSkillPackages = clientSkillPackages;
     }
 
     public List<JsonNode> getAvailableTools() {

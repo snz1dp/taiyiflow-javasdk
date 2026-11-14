@@ -55,6 +55,11 @@ worker.await();   // 常驻；SIGTERM 时 stop()
 | `connectTimeout(Duration)` | 15s | 连接就绪等待 |
 | `drainTimeout(Duration)` | 30s | 停机排空 |
 | `requestTimeout(Duration)` | 30s | REST 超时 |
+| `enableBuiltinTools(List<String>)` | 关闭 | 注册 Shell/File/Search；Shell 使用精确命令白名单 |
+| `enableMediaUnderstanding()` | 关闭 | 注册文档、图片、音频和视频理解工具 |
+| `skillSupplier(SkillSupplier, List<String>)` | null / 空 | 首帧技能供应与默认全文技能；attach/resume 复用快照 |
+| `skillManager(SkillManager)` | null | 与 supplier 同时配置后注册五个技能管理工具 |
+| `agentCustomizer(Consumer<TaiyiAgent>)` | 空操作 | 装配可选模块；浏览器注册由配置化入口按启用状态注入 |
 
 ## 实例方法
 
@@ -225,6 +230,14 @@ public interface WorkerHook {
 - 本地产物经 `worker.uploadArtifact(flowId, sessionId, path)` 上传。
 - 工作区（workspace）只保存 instance_id、最小运行标识和临时文件，**不保存权威业务结果、工具结果或长期任务历史**。
 - `state-dir` 与工作区、凭证目录分离，仅保存有界的瞬态补传发件箱（Outbox）。
+
+## 可选工具与 SKILL 供应
+
+配置化入口的 `tools.*` 默认全部关闭。技能开启后，worker 为每个 flow 的 TaiyiAgent 注入同一个供应器，并注册 `skill_list/skill_fetch/skill_create/skill_upload/skill_delete`；默认工作区技能目录为 `<workspace>/.snz1dp/skills`，user/compat 目录只有显式配置才扫描。平台技能默认关闭，缓存按认证主体、flow、session、技能与版本隔离。
+
+技能正文属于不可信提示内容，不会扩大工具清单、审批、沙盒、网络、环境变量或子任务权限；`requires_env` 只报告缺失变量名。写技能工具仍经过 PermissionHook，首帧和恢复只复用技能快照，不把正文写入 command_payload 或长期结果库。配置化运行时当前只接受 `skills.sync-mode=DISABLED`，不会自动安装远端技能。
+
+浏览器是 optional 模块，未启用时 `DigitalWorker` 不链接浏览器类；启用 HEADLESS/REMOTE_CDP 后才由 `DigitalWorkerMain` 创建注册器。浏览器瞬态状态不进入 Outbox，也不作为平台任务恢复依据。完整键树与容器要求见 [deployment.md](deployment.md)。
 
 ## 配置化启动（worker.yml）
 

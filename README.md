@@ -32,11 +32,12 @@
 ```
 taiyiflow-javasdk/
 ├── taiyiflow-sdk-core/            # 核心：门面、Hook SPI、会话管理、工具分发、传输层、MCP、子任务编排
-├── taiyiflow-sdk-plugins/         # 内置工具插件：Shell（含后台进程）、File、Search、工作区审计
+├── taiyiflow-sdk-plugins/         # 内置工具插件：Shell、File、Search、媒体理解与 SKILL 管理
+├── taiyiflow-sdk-browser/         # 可选浏览器工具：无头 Chromium、远程 CDP、访问与资源限制
 ├── taiyiflow-sdk-collaboration/   # 协同 WS 插件（零 core 依赖，可独立使用）：CollaborationPlugin、SchedulePlugin
 ├── taiyiflow-sdk-worker/          # 数字人运行时：DigitalWorker、任务执行与对账、认证、worker.yml 容器入口
 ├── taiyiflow-spring-boot-starter/ # Spring Boot 3 自动装配：TaiyiAgent 与 DigitalWorker
-└── taiyiflow-sdk-examples/        # 7 个可运行示例
+└── taiyiflow-sdk-examples/        # 12 个可运行示例
 ```
 
 依赖方向：`collaboration` 不依赖 core；`core` 依赖 `collaboration`；`plugins`/`worker`/`starter` 依赖 `core`。
@@ -114,6 +115,16 @@ export TAIYIFLOW_FLOW_ID=your-flow-id
 ```
 
 示例清单见 [docs/examples.md](docs/examples.md)。
+
+### 元数据、媒体、技能与浏览器
+
+- `agent.getFlowMetadata()` 获取 flow/agent 名称、能力特性、知识库、欢迎语及扩展字段；`refreshFlowMetadata()` 强制刷新缓存。
+- `BuiltinPlugins.registerMedia(...)` 显式启用文档、图片、音频和视频理解工具；媒体路径与上传仍受沙盒和权限链约束。
+- `Builder.skillSupplier(...)` 将本地/内置/平台技能供应接入首帧 `client_skill_packages` 与 `requested_skill_names`；恢复沿用原快照。`BuiltinPlugins.registerSkills(...)` 注册 `skill_list/fetch/create/upload/delete`。
+- 引入可选 `taiyiflow-sdk-browser` 后，通过 `BrowserToolProvider.register(...)` 启用无头 Chromium 或远程 CDP。默认禁用；主机/CIDR 白名单、页面数、文本、控制台与截图限额必须按部署环境收紧，JavaScript 执行默认关闭。
+- 技能文本是不可信提示内容，不自动扩大工具、权限、沙盒、网络或子任务能力。浏览器断连、崩溃或超时后不自动重放导航、点击、输入、上传或 JavaScript。
+
+五个完整示例见 [docs/examples.md](docs/examples.md)。
 
 ### 挂 Hook 定制行为
 

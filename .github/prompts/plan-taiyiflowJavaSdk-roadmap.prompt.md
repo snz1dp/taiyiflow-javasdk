@@ -1,9 +1,9 @@
 # Plan: TaiyiFlow Java SDK 后续实施总计划（Phase G–Z）
 
-> 合并时间：2026-11-11；2026-11-13 合并运行时增强计划。本文统一承载“协议差距与纠偏”“执行控制”“数字人形态”“运行时增强”，是 Phase G–Z 的唯一权威实施计划；Phase A–F 的完成情况见初始规划。
+> 合并时间：2026-11-11；2026-11-13 合并运行时增强计划。本文统一承载“协议差距与纠偏”“执行控制”“数字人形态”“运行时增强”，是 Phase G–Z 的唯一权威实施计划；Phase A–F 的完成情况见初始规划，Phase AA–AG 见独立的 Electron 后台能力对齐计划。
 > 协议以后端 `../taiyiflow-dev` 代码为准，桌面行为参照 `../taiyiflow-electron`，后台认证参照慧码至一服务融合网关 `jwtauth` 插件；参考文档与代码冲突时以实际代码为准。
 > 实施状态（2026-11-13）：Phase G–Z 的 SDK 侧实现与本地单元验收已闭环；`WorkerRegistrar`、`.workerRegistrar(...)`、`extensions.worker-registrar`、`extensions.task-reporter` 及对应 starter 装配均已落地。第三方身份、平台审批、跨实例恢复及结果对账仍须按 P-IDENTITY、P-APPROVAL、P-RECOVERY、P-RESULT 联调，不得以本地测试替代平台验收。
-> 第九部分为 Phase S–Z 的详细实施内容，仅允许保存独立状态目录中的最小瞬态回传记录，平台仍是任务、工具结果、检查点和产物权威。
+> 第九部分为 Phase S–Z 的详细实施内容，仅允许保存独立状态目录中的最小瞬态回传记录，平台仍是任务、工具结果、检查点和产物权威。第十部分仅保留 Phase AA–AG 独立计划入口。
 
 ## 一、目标与实施主线
 
@@ -753,3 +753,11 @@ SDK 不为第三方任务系统封闭执行与回报入口，预留以下使用�
 | Phase Z | 已完成 | request_mode 防提权、无凭证能力快照、平台任务先行、本机投递、fan-out 上限、按索引聚合、创建对账和版本化取消已通过测试；detached 子任务未启用，真实父子任务、跨实例恢复及取消竞态待平台联调。 |
 
 全模块 `./mvnw test` 共 345 项测试通过（0 failure、0 error、0 skipped）。以上“已完成”仅表示 SDK 代码与本地自动化验收完成，不代表真实平台端到端闭环；真实平台联调、跨实例恢复、detached 子任务和生产压测仍是外部或后续验收项。
+
+## 十、Electron 后台能力对齐计划（独立文档）
+
+默认 Flow、Flow Metadata、媒体理解、本地/远程浏览器、高价值工具及完整 SKILL 供应机制已拆分为独立计划：
+
+- [TaiyiFlow Java SDK Electron 后台能力对齐实施计划（Phase AA–AG）](plan-taiyiflowJavaSdk-capability-alignment.prompt.md)
+
+该独立文档是 Phase AA–AG 的唯一权威实施与状态记录，当前全部待审查、未实施；本路线图不再复制其阶段清单和验收明细。

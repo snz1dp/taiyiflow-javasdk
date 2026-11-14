@@ -321,8 +321,13 @@ class ShellPluginTest {
 
             JsonNode finished = awaitTerminal(plugin, context, handle);
             assertEquals(0, finished.get("exit_code").asInt());
-            assertTrue(finished.get("workspace_audit").get("complete").asBoolean());
-            assertEquals(1, finished.get("file_operations").size());
+            long deadline = System.nanoTime() + 5_000_000_000L;
+            while (!finished.has("workspace_audit") && System.nanoTime() < deadline) {
+                Thread.sleep(20);
+                finished = plugin.processOutput(context, processCall("process_output", handle)).getResult();
+            }
+            assertTrue(finished.path("workspace_audit").path("complete").asBoolean());
+            assertEquals(1, finished.path("file_operations").size());
             assertEquals("create", finished.get("file_operations").get(0).get("type").asText());
             assertEquals(tempDir.resolve("background.txt").toRealPath().toString(),
                     finished.get("file_operations").get(0).get("path").asText());
@@ -336,6 +341,11 @@ class ShellPluginTest {
         assertTrue(pm.hasHandler("shell"));
         assertTrue(pm.hasHandler("bash"));
         assertTrue(pm.hasHandler("execute_command"));
+        assertTrue(pm.hasHandler("shell_exec"));
+        for (String alias : new String[]{"task_list", "task_output", "task_stop", "task_delete", "task_cleanup"}) {
+            assertTrue(pm.hasHandler(alias));
+        }
+        pm.close();
     }
 
     @Test

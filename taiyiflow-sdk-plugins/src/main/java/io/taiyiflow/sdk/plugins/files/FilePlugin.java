@@ -7,6 +7,8 @@ import io.taiyiflow.sdk.core.plugin.PluginManager;
 import io.taiyiflow.sdk.transport.envelope.ToolCall;
 import io.taiyiflow.sdk.transport.envelope.ToolResult;
 
+import static io.taiyiflow.sdk.plugins.ToolDefinitions.tool;
+
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -485,10 +487,24 @@ public class FilePlugin {
 
     public static void register(PluginManager pm, Path sandboxRoot) {
         FilePlugin plugin = new FilePlugin(sandboxRoot);
-        pm.register("read_file", plugin::readFile);
-        pm.register("write_file", plugin::writeFile);
-        pm.register("file_edit", plugin::editFile);
-        pm.register("list_files", plugin::listFiles);
+        String pathSchema = "{\"path\":{\"type\":\"string\"}}";
+        pm.register(tool("read_file", "Read a UTF-8 file inside the workspace", pathSchema, "path"), plugin::readFile);
+        pm.register(tool("write_file", "Write a UTF-8 file inside the workspace",
+                "{\"path\":{\"type\":\"string\"},\"content\":{\"type\":\"string\"}}", "path", "content"),
+                plugin::writeFile);
+        pm.register(tool("file_edit", "Edit a UTF-8 file with exact string replacement",
+                "{\"path\":{\"type\":\"string\"},\"old_string\":{\"type\":\"string\"},"
+                        + "\"new_string\":{\"type\":\"string\"},\"expected_sha256_before\":{\"type\":\"string\"},"
+                        + "\"dry_run\":{\"type\":\"boolean\"},\"replace_all\":{\"type\":\"boolean\"}}",
+                "path", "old_string", "new_string"), plugin::editFile);
+        pm.register(tool("list_files", "List files inside the workspace", pathSchema), plugin::listFiles);
+    }
+
+    public static void registerReadOnly(PluginManager pm, Path sandboxRoot) {
+        FilePlugin plugin = new FilePlugin(sandboxRoot);
+        String pathSchema = "{\"path\":{\"type\":\"string\"}}";
+        pm.register(tool("read_file", "Read a UTF-8 file inside the workspace", pathSchema, "path"), plugin::readFile);
+        pm.register(tool("list_files", "List files inside the workspace", pathSchema), plugin::listFiles);
     }
 
     @FunctionalInterface

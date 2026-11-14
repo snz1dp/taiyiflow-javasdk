@@ -22,6 +22,17 @@
         </dependency>
         <dependency>
             <groupId>io.taiyiflow</groupId>
+            <artifactId>taiyiflow-sdk-plugins</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.taiyiflow</groupId>
+            <artifactId>taiyiflow-sdk-browser</artifactId>
+            <version>${project.version}</version>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>io.taiyiflow</groupId>
             <artifactId>taiyiflow-sdk-collaboration</artifactId>
             <version>${project.version}</version>
         </dependency>

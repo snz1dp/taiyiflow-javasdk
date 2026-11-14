@@ -20,7 +20,8 @@ public record WorkerConfig(
         Execution execution,
         Extensions extensions,
         Path stateDir,
-        Outbox outbox) {
+        Outbox outbox,
+        Tools tools) {
 
     public WorkerConfig {
         recoveryPolicy = recoveryPolicy == null ? RecoveryPolicy.AUTO : recoveryPolicy;
@@ -29,6 +30,7 @@ public record WorkerConfig(
         execution = execution == null ? new Execution(null, null, null, null) : execution;
         extensions = extensions == null ? new Extensions(null, null, null, null, null, null, null) : extensions;
         outbox = outbox == null ? new Outbox(null, null, null, null) : outbox;
+        tools = tools == null ? new Tools(false, List.of(), false, null, null) : tools;
     }
 
     /** Source-compatible constructor for callers predating transient outbox configuration. */
@@ -36,8 +38,36 @@ public record WorkerConfig(
                         String deviceId, RecoveryPolicy recoveryPolicy, PermissionPolicy permissionPolicy,
                         Approval approval, Execution execution, Extensions extensions) {
         this(baseUrl, auth, identity, workspace, clientId, deviceId, recoveryPolicy, permissionPolicy,
-                approval, execution, extensions, null, null);
+                approval, execution, extensions, null, null, null);
     }
+
+    public WorkerConfig(String baseUrl, Auth auth, Identity identity, Path workspace, String clientId,
+                        String deviceId, RecoveryPolicy recoveryPolicy, PermissionPolicy permissionPolicy,
+                        Approval approval, Execution execution, Extensions extensions, Path stateDir, Outbox outbox) {
+        this(baseUrl, auth, identity, workspace, clientId, deviceId, recoveryPolicy, permissionPolicy,
+                approval, execution, extensions, stateDir, outbox, null);
+    }
+
+    public record Tools(boolean builtinTools, List<String> allowedShellCommands, boolean media,
+                        Browser browser, Skills skills) {
+        public Tools {
+            allowedShellCommands = allowedShellCommands == null ? List.of() : List.copyOf(allowedShellCommands);
+            browser = browser == null ? new Browser(null, null, null, null, null, null, null, null, null,
+                    null, null, null, null) : browser;
+            skills = skills == null ? new Skills(false, false, null, null, null, List.of(), List.of(),
+                    false, null) : skills;
+        }
+    }
+
+    public record Browser(String mode, Path executablePath, List<String> launchArguments,
+                          Duration actionTimeout, Integer maxPagesPerSession, Integer maxReadTextCharacters,
+                          Integer maxConsoleMessages, Integer maxScreenshotBytes, Boolean executeJsEnabled,
+                          java.util.Set<String> allowedHosts, java.util.Set<String> allowedCidrs,
+                          String remoteEndpointSecret, String remoteAuthorizationSecret) { }
+
+    public record Skills(boolean enabled, boolean platformEnabled, Path workspaceDir, Path userDir,
+                         Path compatDir, List<String> defaultNames, List<String> bundledResources,
+                         boolean toleratePlatformFailure, String syncMode) { }
 
     public enum AuthType {
         API_KEY,

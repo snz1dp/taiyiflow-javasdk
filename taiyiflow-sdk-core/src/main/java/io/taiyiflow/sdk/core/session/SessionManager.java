@@ -6,6 +6,7 @@ import io.taiyiflow.sdk.core.state.SessionState;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -23,6 +24,7 @@ public class SessionManager {
     private final ExecutorService executor;
     private final int maxSessions;
     private final Map<String, AgentSessionImpl> sessions = new ConcurrentHashMap<>();
+    private final Map<String, AgentSessionImpl> openSessions = new ConcurrentHashMap<>();
 
     public SessionManager(ExecutorService executor, int maxSessions) {
         this.executor = executor;
@@ -42,6 +44,7 @@ public class SessionManager {
         if (existing != null) {
             throw new IllegalStateException("Session ID is already registered: " + sessionId);
         }
+        registerOpenSession(session);
         log.debug("Created session: {}", sessionId);
         return session;
     }
@@ -61,6 +64,14 @@ public class SessionManager {
             }
             sessions.put(session.getSessionId(), session);
         }
+        registerOpenSession(session);
+    }
+
+    private void registerOpenSession(AgentSessionImpl session) {
+        AgentSessionImpl previous = openSessions.put(session.getSessionId(), session);
+        if (previous != null && previous != session) {
+            previous.notifyLifecycleClose();
+        }
     }
 
     synchronized void updateSessionId(String previousId, String resolvedId, AgentSessionImpl session) {
@@ -69,16 +80,30 @@ public class SessionManager {
             throw new IllegalStateException("Resolved session ID is already registered: " + resolvedId);
         }
         sessions.remove(previousId, session);
+        openSessions.remove(previousId, session);
+        registerOpenSession(session);
     }
 
     public void removeSession(String sessionId) {
         sessions.remove(sessionId);
-        log.debug("Removed session: {}", sessionId);
+        AgentSessionImpl removed = openSessions.remove(sessionId);
+        if (removed != null) {
+            removed.notifyLifecycleClose();
+            log.debug("Removed session: {}", sessionId);
+        }
     }
 
     void removeSession(String sessionId, AgentSessionImpl session) {
-        if (sessions.remove(sessionId, session)) {
+        sessions.remove(sessionId, session);
+        if (openSessions.remove(sessionId, session)) {
+            session.notifyLifecycleClose();
             log.debug("Removed session: {}", sessionId);
+        }
+    }
+
+    void detachSession(String sessionId, AgentSessionImpl session) {
+        if (sessions.remove(sessionId, session)) {
+            log.debug("Detached session: {}", sessionId);
         }
     }
 
@@ -90,15 +115,21 @@ public class SessionManager {
     }
 
     public void shutdownAll() {
-        log.info("Shutting down all sessions: {}", sessions.size());
-        for (AgentSessionImpl session : sessions.values()) {
+        log.info("Shutting down all sessions: {}", openSessions.size());
+        List<AgentSessionImpl> open = List.copyOf(openSessions.values());
+        for (AgentSessionImpl session : open) {
             try {
                 session.interrupt();
             } catch (Exception e) {
                 log.warn("Error interrupting session {}: {}", session.getSessionId(), e.getMessage());
             }
         }
-        sessions.clear();
+        for (AgentSessionImpl session : open) {
+            sessions.remove(session.getSessionId(), session);
+            if (openSessions.remove(session.getSessionId(), session)) {
+                session.notifyLifecycleClose();
+            }
+        }
     }
 
     public int getActiveSessionCount() {

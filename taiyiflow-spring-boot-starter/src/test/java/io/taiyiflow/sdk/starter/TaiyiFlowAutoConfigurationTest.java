@@ -1,5 +1,6 @@
 package io.taiyiflow.sdk.starter;
 
+import com.sun.net.httpserver.HttpServer;
 import io.taiyiflow.sdk.RecoveryPolicy;
 import io.taiyiflow.sdk.TaiyiAgent;
 import io.taiyiflow.sdk.hooks.PermissionHook;
@@ -9,8 +10,11 @@ import io.taiyiflow.sdk.hooks.ToolExecutionHook;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
+import org.springframework.boot.test.context.FilteredClassLoader;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
@@ -78,6 +82,72 @@ class TaiyiFlowAutoConfigurationTest {
             assertEquals(8, agent.getRecoveryMaxAttempts());
             assertTrue(agent.isAutoRestartOnExecutionLoss());
             assertEquals(Duration.ofSeconds(300), agent.getPermissionTimeout());
+            assertEquals(sandbox, agent.getWorkspace());
+        });
+    }
+
+    @Test
+    void configuresMediaAndSkillTools(@TempDir Path sandbox) throws Exception {
+        Path skill = sandbox.resolve("skills/demo");
+        java.nio.file.Files.createDirectories(skill);
+        java.nio.file.Files.writeString(skill.resolve("SKILL.md"),
+                "---\nname: Demo\n---\nUse this skill for demonstrations.\n");
+        runner(sandbox)
+                .withPropertyValues("taiyiflow.plugins.media=true", "taiyiflow.skills.enabled=true",
+                        "taiyiflow.skills.workspace-dir=" + sandbox.resolve("skills"))
+                .run(context -> {
+                    TaiyiAgent agent = context.getBean(TaiyiAgent.class);
+                    assertTrue(agent.getPluginManager().hasHandler("document_unstructured"));
+                    assertTrue(agent.getPluginManager().hasHandler("skill_list"));
+                    assertTrue(agent.getPluginManager().hasHandler("skill_fetch"));
+                    assertEquals(1, agent.getSkillSupplier().supply(
+                            new io.taiyiflow.sdk.core.skill.SkillQuery("flow-1", "s1", "agent", "s1", java.util.Set.of()),
+                            io.taiyiflow.sdk.core.skill.SkillSelection.defaults())
+                            .packages().size());
+                });
+    }
+
+    @Test
+    void startsWithoutOptionalBrowserClasses(@TempDir Path sandbox) {
+        runner(sandbox)
+                .withConfiguration(AutoConfigurations.of(TaiyiFlowBrowserAutoConfiguration.class))
+                .withClassLoader(new FilteredClassLoader("io.taiyiflow.sdk.browser"))
+                .run(context -> {
+                    assertNull(context.getStartupFailure());
+                    assertTrue(context.containsBean("taiyiAgent"));
+                });
+    }
+
+    @Test
+    void usesServerDefaultFlowWhenExplicitlyEnabled(@TempDir Path sandbox) throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/api/v1/config", exchange -> {
+            byte[] body = "{\"default_flow_id\":\"server-flow\"}".getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        server.start();
+        try {
+            runnerWithoutFlow(sandbox)
+                    .withPropertyValues(
+                            "taiyiflow.base-url=http://127.0.0.1:" + server.getAddress().getPort(),
+                            "taiyiflow.use-default-flow=true")
+                    .run(context -> {
+                        assertNull(context.getStartupFailure());
+                        assertEquals("server-flow", context.getBean(TaiyiAgent.class).getFlowId());
+                    });
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void backsOffWithoutFlowSelection(@TempDir Path sandbox) {
+        runnerWithoutFlow(sandbox).run(context -> {
+            assertNull(context.getStartupFailure());
+            assertFalse(context.containsBean("taiyiAgent"));
         });
     }
 
@@ -92,12 +162,15 @@ class TaiyiFlowAutoConfigurationTest {
     }
 
     private static ApplicationContextRunner runner(Path sandbox) {
+        return runnerWithoutFlow(sandbox).withPropertyValues("taiyiflow.flow-id=flow-1");
+    }
+
+    private static ApplicationContextRunner runnerWithoutFlow(Path sandbox) {
         return new ApplicationContextRunner()
                 .withConfiguration(AutoConfigurations.of(TaiyiFlowAutoConfiguration.class))
                 .withPropertyValues(
                         "taiyiflow.base-url=http://localhost:9999",
                         "taiyiflow.api-key=test-key",
-                        "taiyiflow.flow-id=flow-1",
                         "taiyiflow.sandbox-root=" + sandbox,
                         "taiyiflow.plugins.shell=false",
                         "taiyiflow.plugins.files=false",

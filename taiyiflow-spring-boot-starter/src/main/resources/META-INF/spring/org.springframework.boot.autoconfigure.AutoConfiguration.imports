@@ -1,2 +1,3 @@
 io.taiyiflow.sdk.starter.TaiyiFlowAutoConfiguration
+io.taiyiflow.sdk.starter.TaiyiFlowBrowserAutoConfiguration
 io.taiyiflow.sdk.starter.DigitalWorkerAutoConfiguration
