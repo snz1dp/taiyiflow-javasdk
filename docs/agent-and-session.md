@@ -1,4 +1,4 @@
-# TaiyiAgent 与 AgentSession
+# 智能体与会话
 
 `TaiyiAgent` 是 SDK 的主入口门面：一个实例绑定一个智能体（flow），内部以虚拟线程管理多个并发会话。`AgentSession` 表示一次会话执行，提供流式对话、执行控制与审批裁决。
 

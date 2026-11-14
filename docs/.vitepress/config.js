@@ -16,7 +16,7 @@ const hasGit = existsSync(resolve(__dirname, '../../.git'))
 
 const config = defineConfig({
   title: '太乙智启 Java 开发手册',
-  description: '太乙智启 Java Agent SDK 使用手册：TaiyiAgent 智能体调用、DigitalWorker 数字人运行时、Hook 扩展与容器部署',
+  description: '太乙智启 Java Agent SDK 使用手册：智能体与会话调用、智能体数字人、钩子（Hook）扩展与容器部署',
   lang: 'zh-CN',
   base: basePath,
 
@@ -63,7 +63,7 @@ const config = defineConfig({
         text: '入门',
         items: [
           { text: '快速开始', link: '/getting-started' },
-          { text: 'TaiyiAgent 与 AgentSession', link: '/agent-and-session' },
+          { text: '智能体与会话', link: '/agent-and-session' },
           { text: '示例程序', link: '/examples' }
         ]
       },
@@ -79,7 +79,7 @@ const config = defineConfig({
       {
         text: '数字人与协同',
         items: [
-          { text: 'DigitalWorker 数字人运行时', link: '/digital-worker' },
+          { text: '智能体数字人', link: '/digital-worker' },
           { text: '协同插件', link: '/collaboration' }
         ]
       },

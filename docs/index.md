@@ -10,10 +10,10 @@ hero:
       text: 快速开始
       link: /getting-started
     - theme: alt
-      text: TaiyiAgent 与 AgentSession
+      text: 智能体与会话
       link: /agent-and-session
     - theme: alt
-      text: 数字人运行时
+      text: 智能体数字人
       link: /digital-worker
 
 features:

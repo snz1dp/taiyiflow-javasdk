@@ -1,4 +1,4 @@
-# DigitalWorker 数字人运行时
+# 智能体数字人
 
 `DigitalWorker`（`taiyiflow-sdk-worker`）让 Java 进程成为长期在线的数字员工：有身份（workerId/角色/能力）、可被平台调度接活（协同 WS）、可持续工作（暂停/恢复/取消）、可请示汇报（审批/状态回报）、可自愈（断线恢复/结果补传）。
 
