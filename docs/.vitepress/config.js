@@ -55,7 +55,7 @@ const config = defineConfig({
       { text: '数字人', link: '/digital-worker' },
       { text: 'Spring Boot', link: '/spring-boot' },
       { text: '部署', link: '/deployment' },
-      { text: '源码仓库', link: 'https://gitlab.snz1.cn/dp/ai/taiyi/taiyiflow-javasdk', target: '_blank' }
+      { text: '源码仓库', link: 'https://github.com/snz1dp/taiyiflow-javasdk', target: '_blank' }
     ],
 
     sidebar: [

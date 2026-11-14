@@ -15,7 +15,7 @@
 ### 方式一：源码构建
 
 ```bash
-git clone <repo-url> taiyiflow-javasdk
+git clone git@github.com:snz1dp/taiyiflow-javasdk.git taiyiflow-javasdk
 cd taiyiflow-javasdk
 ./mvnw clean install -DskipTests
 ```
