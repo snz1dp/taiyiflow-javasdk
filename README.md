@@ -340,6 +340,8 @@ snz1dpctl make publish    # 发布到慧码至一组件仓库
 
 **运行时上下文路径**：镜像内置 base 为 `/taiyi/javasdk/docs/`，启动时由 `docs/scripts/40-replace-context-path.sh` 按 `WEB_CONTEXT_PATH` 环境变量重定位静态产物与 nginx 配置，无需重新构建即可挂到任意网关路径下（见 `docs/BUILD.yaml` 的 `service.envs` 与 `ingress`）。
 
+**GitHub Pages 自动部署**：推送到 `master` 分支且 `docs/` 有变更时，`.github/workflows/deploy-docs.yml` 自动构建并发布到 GitHub Pages（base 按仓库名动态注入，产物路径 `docs/.vitepress/dist`），也可在 Actions 页面手动触发。首次使用需在 GitHub 仓库 Settings → Pages 中将 Source 设为 **GitHub Actions**。
+
 ## 文档索引
 
 | 文档 | 内容 |
