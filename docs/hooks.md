@@ -1,8 +1,8 @@
 # Hook 体系与权限审批
 
-TaiyiAgent 的全部业务扩展收敛为 4 个 Hook SPI（`io.taiyiflow.sdk.hooks` 包）。Hook 可挂在 Builder（全局，作用于所有会话）或会话（仅该会话）上；不挂则走内置默认行为。
+TaiyiAgent 的全部业务扩展收敛为 4 个钩子（Hook）服务提供接口（SPI，`io.taiyiflow.sdk.hooks` 包）。钩子可挂在构建器（Builder，全局，作用于所有会话）或会话（仅该会话）上；不挂则走内置默认行为。
 
-## Hook 一览
+## 钩子（Hook）一览
 
 | Hook | 方法 | 默认行为 |
 |------|------|---------|
@@ -89,7 +89,7 @@ public interface PermissionHook {
 
 > 注意：`process_list`、`process_output`、`read_file`、`list_files`、`search`、`grep` 等属于只读；`run_subtask` 不在固定写名单中，按只读处理。
 
-### 自定义审批 Hook
+### 自定义审批钩子（Hook）
 
 ```java
 .onPermission((sessionId, toolCall) -> {
@@ -115,7 +115,7 @@ boolean rejected = session.deny(toolCallId, "not allowed");
 - 重复或未知 toolCallId 的回执返回 `false`。
 - 未确认的工具结果仅保存在进程内存：attach 前补偿重报，resume 时随检查点提交，不写入本地权威结果库。
 
-完整示例见 `LocalApprovalExample`（从 stdin 读取 approve/deny）。
+完整示例见 `LocalApprovalExample`（从标准输入（stdin）读取 approve/deny）。
 
 ## SessionHook
 
@@ -163,6 +163,6 @@ ToolExecutionHook.after() ◄──────────────┘
 
 ## 挂载位置与组合
 
-- Builder 上的 Hook 为全局列表，可多次调用追加；会话级 Hook 只影响该会话。
-- Spring Boot Starter 会把容器中的四类 Hook Bean 按 `orderedStream()` 顺序自动挂到全局。
+- 构建器（Builder）上的钩子为全局列表，可多次调用追加；会话级钩子只影响该会话。
+- Spring Boot 启动器（Starter）会把容器中的四类钩子 Bean 按 `orderedStream()` 顺序自动挂到全局。
 - DigitalWorker 的审批不走会话 approve/deny，而是 `approvalHandler` + `ApprovalChannel` + `ApprovalAudit` 机制，见 [digital-worker.md](digital-worker.md)。

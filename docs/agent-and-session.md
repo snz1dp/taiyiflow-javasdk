@@ -2,7 +2,7 @@
 
 `TaiyiAgent` 是 SDK 的主入口门面：一个实例绑定一个智能体（flow），内部以虚拟线程管理多个并发会话。`AgentSession` 表示一次会话执行，提供流式对话、执行控制与审批裁决。
 
-## TaiyiAgent Builder
+## TaiyiAgent 构建器（Builder）
 
 ```java
 TaiyiAgent agent = TaiyiAgent.builder()
@@ -17,7 +17,7 @@ TaiyiAgent agent = TaiyiAgent.builder()
 | 方法 | 默认值 | 说明 |
 |------|--------|------|
 | `baseUrl(String)` | 必填 | 平台地址，非空非 blank |
-| `apiKey(String)` | 必填（与 accessToken 二选一） | 静态 API Key |
+| `apiKey(String)` | 必填（与 accessToken 二选一） | 静态 API 密钥（API Key） |
 | `accessToken(Supplier<String>)` | — | 动态令牌供应器，每次请求读取最新值 |
 | `flowId(String)` | 必填 | 绑定的智能体 flow |
 | `clientId(String)` | `~/.taiyiflow/client-id` 持久化标识 | 客户端标识 |
@@ -41,7 +41,7 @@ TaiyiAgent agent = TaiyiAgent.builder()
 | 方法 | 默认值 | 说明 |
 |------|--------|------|
 | `permissionPolicy(PermissionPolicy)` | `READONLY` | `AUTO` / `CONFIRM` / `READONLY`，见 [hooks.md](hooks.md) |
-| `permissionHook(PermissionHook)` | 无 | 策略级审批 Hook |
+| `permissionHook(PermissionHook)` | 无 | 策略级审批钩子（Hook） |
 | `permissionTimeout(Duration)` | 300s | ASK 审批等待超时；`Duration.ZERO` 永不超时；其他有效值 10–6000s |
 
 ### 断线恢复
@@ -51,7 +51,7 @@ TaiyiAgent agent = TaiyiAgent.builder()
 | `recoveryPolicy(RecoveryPolicy)` | `MANUAL` | `MANUAL` / `AUTO` |
 | `recoveryBackoff(Duration min, Duration max)` | 2s / 60s | 要求 0 < min ≤ max |
 | `recoveryMaxAttempts(int)` | 8 | 必须 > 0 |
-| `autoRestartOnExecutionLoss(boolean)` | true | 确认执行丢失后是否允许自动 start |
+| `autoRestartOnExecutionLoss(boolean)` | true | 确认执行丢失后是否允许自动启动新执行（start） |
 
 详见 [execution-control.md](execution-control.md)。
 
@@ -88,7 +88,7 @@ TaiyiAgent agent = TaiyiAgent.builder()
 
 启用后通过 `agent.getCollaborationPlugin()` 获取插件并自行注册任务回调；`shutdown()` 时自动停止。详见 [collaboration.md](collaboration.md)。
 
-### 全局 Hook
+### 全局钩子（Hook）
 
 `onStream(StreamHook)`、`onToolExecution(ToolExecutionHook)`、`onPermission(PermissionHook)`、`onLifecycle(SessionHook)` 均可多次调用，作用于所有会话。会话级同名方法只作用于单个会话。
 
@@ -149,13 +149,13 @@ AgentSession chat(ChatRequest request);                       // 高级协议请
 
 | 方法 | 语义 |
 |------|------|
-| `pause()` | 请求服务端暂停当前 run（REST 控制接口），返回 `AgentLoopControlResult` |
+| `pause()` | 请求服务端暂停当前执行轮次（run，REST 控制接口），返回 `AgentLoopControlResult` |
 | `cancel()` | 服务端取消 + 关闭本地流资源 |
-| `attach()` | 附着到仍在执行的原 run，不启动新执行 |
-| `resume()` | 自动发现并恢复当前可续跑 checkpoint |
-| `resume(ResumableCheckpoint)` | 恢复指定 checkpoint |
-| `retry()` | 新 run：服务端已持久化则续做，否则重发原输入 |
-| `repeat()` | 新 run：复用上一轮 input/tweaks/files/requestType |
+| `attach()` | 重接（attach）仍在执行的原轮次，不启动新执行 |
+| `resume()` | 自动发现并恢复当前可续跑检查点（checkpoint） |
+| `resume(ResumableCheckpoint)` | 恢复指定检查点 |
+| `retry()` | 新轮次：服务端已持久化则续做，否则重发原输入 |
+| `repeat()` | 新轮次：复用上一轮输入、参数覆盖、文件与请求类型（input/tweaks/files/requestType） |
 | `interrupt()` | 仅本地中断，不调服务端控制 API |
 
 ### 审批裁决
@@ -183,7 +183,7 @@ boolean await(Duration timeout) throws InterruptedException; // 超时返回 fal
 
 `SessionState` 枚举：`IDLE, CONNECTING, STREAMING, TOOL_CALLING, PAUSING, PAUSED, RESUMING, CANCELLED, DISCONNECTED, RESTARTING, DONE, INTERRUPTED, ERROR`。
 
-### 会话级 Hook
+### 会话级钩子（Hook）
 
 ```java
 session.onStream(streamHook);

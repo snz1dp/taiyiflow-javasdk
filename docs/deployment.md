@@ -10,10 +10,10 @@ DigitalWorker 以**单实例容器**形态运行：同一 workerId 只允许一�
 ./mvnw clean compile                          # 编译
 ./mvnw test                                   # 全部测试
 ./mvnw package                                # 打包
-./mvnw -pl taiyiflow-sdk-worker -am package   # 只打 worker（产出 *-all.jar fat jar）
+./mvnw -pl taiyiflow-sdk-worker -am package   # 只打 worker（产出 *-all.jar 全量包（fat jar））
 ```
 
-worker 模块使用 maven-shade-plugin 产出 classifier 为 `all` 的可执行 fat jar，mainClass 为 `io.taiyiflow.sdk.worker.DigitalWorkerMain`。
+worker 模块使用 maven-shade-plugin 产出 classifier 为 `all` 的可执行全量包（fat jar），mainClass 为 `io.taiyiflow.sdk.worker.DigitalWorkerMain`。
 
 ### Make 目标
 
@@ -30,7 +30,7 @@ worker 模块使用 maven-shade-plugin 产出 classifier 为 `all` 的可执行 
 
 ### Dockerfile 要点
 
-- 多阶段构建：build 阶段打包 worker fat jar；runtime 阶段仅 JRE。
+- 多阶段构建：build 阶段打包 worker 全量包（fat jar）；runtime 阶段仅 JRE。
 - 非 root 系统用户 `taiyiflow` 运行。
 - 预建目录：`/app/lib`（业务适配器）、`/config`、`/var/lib/taiyiflow/worker`、`/var/lib/taiyiflow/runtime-state`、`/var/lib/taiyiflow-credentials`。
 - `ENV TAIYIFLOW_WORKER_CONFIG=/config/worker.yml`；`STOPSIGNAL SIGTERM`。
@@ -68,7 +68,7 @@ docker run -d --name taiyiflow-worker \
 
 ## worker.yml 完整键树
 
-键名 kebab-case；Duration 用 ISO-8601（如 `PT15S`）；枚举按名称精确匹配；**未知键会导致绑定失败**。示例文件：[worker.yml](/worker.yml)（仓库内位于 `deploy/worker.yml`）。
+键名短横线命名（kebab-case）；Duration 用 ISO-8601（如 `PT15S`）；枚举按名称精确匹配；**未知键会导致绑定失败**。示例文件：[worker.yml](/worker.yml)（仓库内位于 `deploy/worker.yml`）。
 
 ```yaml
 base-url: http://taiyiflow-platform:8080     # 必填
@@ -85,7 +85,7 @@ identity:                                     # 必填
   role: COLLABORATION_WORKER                  # COLLABORATION_WORKER | PRIMARY_CLI
   abilities: []                               # 只声明已实现的能力，如 [shell, files, search]
 workspace: /var/lib/taiyiflow/worker          # 必填
-state-dir: /var/lib/taiyiflow/runtime-state   # 可选；缺省 → 内存 Outbox（重启丢失未确认记录）
+state-dir: /var/lib/taiyiflow/runtime-state   # 可选；缺省 → 内存发件箱（Outbox，重启丢失未确认记录）
 client-id: ""                                 # 可选；缺省随机 UUID
 device-id: ""                                 # 可选；缺省 auth.deviceId()
 recovery-policy: AUTO                         # MANUAL | AUTO（默认 AUTO）
@@ -114,20 +114,20 @@ extensions:
 
 ### extensions 加载机制
 
-所有扩展类通过**当前 classpath 反射 + public 无参构造**实例化（无 SPI/ServiceLoader、无 Spring 注入）：
+所有扩展类通过**当前类路径（classpath）反射 + public 无参构造**实例化（无 SPI/ServiceLoader、无 Spring 注入）：
 
-- 业务适配器 JAR 挂载到 `/app/lib`，由 ENTRYPOINT 的 `-cp /app/worker.jar:/app/lib/*` 纳入 classpath。
+- 业务适配器 JAR 挂载到 `/app/lib`，由 ENTRYPOINT 的 `-cp /app/worker.jar:/app/lib/*` 纳入类路径。
 - `identity-validator` 必填；其余键非空白才加载；类型不匹配或加载失败抛 `Unable to load <Type>: <className>`。
-- 密钥只配置环境变量名称（`token-secret`），真实令牌经 env/Secret 注入。
+- 密钥只配置环境变量名称（`token-secret`），真实令牌经环境变量/密钥（Secret）注入。
 
 ## 运行约束与恢复语义
 
-- **单副本**：同一 workerId 只运行一个容器副本；编排用 Recreate 禁滚动；SDK 不做主备/选举/fencing。
-- **无 HTTP 端口**：不伪造健康端点；就绪以协同 `connection.ready` 与平台 presence 为准，存活/摘除/拉起由容器平台负责。
-- **停机**：SIGTERM → shutdown hook 停接新任务 → 按 drain-timeout 排空 → 关协同连接。
+- **单副本**：同一 workerId 只运行一个容器副本；编排用 Recreate 禁滚动；SDK 不做主备/选举/隔离（fencing）。
+- **无 HTTP 端口**：不伪造健康端点；就绪以协同 `connection.ready` 与平台在线状态（presence）为准，存活/摘除/拉起由容器平台负责。
+- **停机**：SIGTERM → 停机钩子（shutdown hook）停接新任务 → 按 drain-timeout 排空 → 关协同连接。
 - **重启对账**：先重建连接再分页 `tasks.fetch_recent`；仅明确 pending 且未取消的任务自动执行；dispatched/acknowledged/running 与结果未知任务不重放。
-- **目录隔离**：workspace 只放 instance_id、最小运行标识与临时文件；state-dir 只放瞬态补传 Outbox；凭证加密文件与密钥放独立 credentials 卷，禁入 workspace/runtime-state/镜像。
-- 跨容器恢复依赖平台权威关联/共享状态/幂等查询（P-RECOVERY、P-RESULT、P-APPROVAL 后端能力）；能力不足时保持 `REPORT_UNKNOWN` 人工对账，不自动 start。
+- **目录隔离**：工作区（workspace）只放 instance_id、最小运行标识与临时文件；state-dir 只放瞬态补传发件箱（Outbox）；凭证加密文件与密钥放独立 credentials 卷，禁入 workspace/runtime-state/镜像。
+- 跨容器恢复依赖平台权威关联/共享状态/幂等查询（P-RECOVERY、P-RESULT、P-APPROVAL 后端能力）；能力不足时保持 `REPORT_UNKNOWN` 人工对账，不自动启动新执行。
 
 ## 观测
 

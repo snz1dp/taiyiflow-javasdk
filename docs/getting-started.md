@@ -8,7 +8,7 @@
 |----|------|
 | JDK | 编译基线 Java 17；**运行需要 Java 21+**（会话与任务执行使用虚拟线程） |
 | 构建 | 仓库自带 Maven Wrapper（`./mvnw`），无需本机安装 Maven |
-| 后端 | 可访问的 TaiyiFlow 平台服务，以及有效的 API Key 与 flowId |
+| 后端 | 可访问的 TaiyiFlow 平台服务，以及有效的 API 密钥（API Key）与智能体标识（flowId） |
 
 ## 安装
 
@@ -60,8 +60,8 @@ cd taiyiflow-javasdk
 
 ```bash
 export TAIYIFLOW_BASE_URL=http://localhost:8080   # 平台地址
-export TAIYIFLOW_API_KEY=your-api-key             # API Key
-export TAIYIFLOW_FLOW_ID=your-flow-id             # 智能体 flow ID
+export TAIYIFLOW_API_KEY=your-api-key             # API 密钥（API Key）
+export TAIYIFLOW_FLOW_ID=your-flow-id             # 智能体标识（flow ID）
 ```
 
 ## 最简示例
@@ -100,7 +100,7 @@ public class Demo {
 说明：
 
 - `chat()` 立即返回（返回 `this`，支持链式调用），回复通过 `StreamHook.onChunk` 增量推送；`await()` 阻塞到本轮执行结束。
-- 不挂任何 Hook 也能运行：消息流在内部缓冲，工具调用走默认权限策略。
+- 不挂任何钩子（Hook）也能运行：消息流在内部缓冲，工具调用走默认权限策略。
 - `TaiyiAgent` 默认**不注册任何本地工具插件**。若智能体需要在你本机执行 shell/文件/搜索工具，见下一节。
 - 首次构建时若未显式指定 `clientId`，SDK 会在 `~/.taiyiflow/client-id` 生成并持久化一个客户端标识。
 
@@ -123,7 +123,7 @@ BuiltinPlugins.registerReadOnly(agent.getPluginManager(), Path.of("/tmp/taiyiflo
 
 安全默认：
 
-- shell 白名单按**分词后第一个 token 精确匹配**，命令不经系统 shell 解析；白名单为空则拒绝一切命令。
+- shell 白名单按**分词后第一个词元（token）精确匹配**，命令不经系统 shell 解析；白名单为空则拒绝一切命令。
 - 文件与搜索工具的路径被限制在沙盒根目录内（含符号链接逃逸校验）。
 - 默认权限策略 `PermissionPolicy.READONLY`：只读工具放行，写操作工具（shell、write_file、file_edit 等）直接拒绝。需要执行写操作时改用 `CONFIRM`（进入审批）或 `AUTO`（全放行），详见 [hooks.md](hooks.md)。
 

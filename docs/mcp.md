@@ -1,8 +1,8 @@
 # MCP 接入
 
-SDK 支持两种 MCP（Model Context Protocol）服务器形态，工具统一以 `c_{server}_{tool}` 命名注册到 `PluginManager`，经过同一条权限、Hook、并发与取消链。
+SDK 支持两种模型上下文协议（MCP，Model Context Protocol）服务器形态，工具统一以 `c_{server}_{tool}` 命名注册到 `PluginManager`，经过同一条权限、钩子（Hook）、并发与取消链。
 
-## Streamable HTTP：McpToolClient
+## 流式 HTTP（Streamable HTTP）：McpToolClient
 
 ```java
 McpToolClient client = new McpToolClient(
@@ -22,18 +22,18 @@ List<String> names = client.registerTools("weather", agent.getPluginManager());
 行为要点：
 
 - 协议版本 `2025-03-26`；懒初始化：首次调用发 `initialize` + `notifications/initialized`。
-- 自动跟踪响应头 `Mcp-Session-Id`；响应兼容 JSON 与 SSE（按 JSON-RPC id 匹配）。
+- 自动跟踪响应头 `Mcp-Session-Id`；响应兼容 JSON 与服务器推送事件（SSE，按 JSON-RPC id 匹配）。
 - `serverName` 空白抛 `IllegalArgumentException`。
 - `McpTool` record：`(name, description, inputSchema)`。
 
-## Stdio：StdioMcpManager
+## 标准输入输出（stdio）：StdioMcpManager
 
 托管本地 MCP 子进程，适合无 HTTP 端点的本地服务器。
 
 ```java
 StdioMcpPolicy policy = StdioMcpPolicy.builder(workspace)
     .allowCommand("python3")                 // 命令白名单（默认空 = 全部拒绝）
-    .allowEnvironment("MCP_SERVER_TOKEN")    // 显式 env 白名单（默认空）
+    .allowEnvironment("MCP_SERVER_TOKEN")    // 显式环境变量（env）白名单（默认空）
     .build();
 
 StdioMcpManager stdio = new StdioMcpManager(policy, Duration.ofSeconds(30));
@@ -69,8 +69,8 @@ StdioMcpServerConfig.fromJson(node);   // {command, args, env, cwd}；
 | 项 | 默认值 | 说明 |
 |----|--------|------|
 | 命令白名单 | 空（必须显式 allow） | `allowCommand(...)` |
-| 显式 env 白名单 | 空（必须显式 allow） | `allowEnvironment(...)`；config.env 中的变量必须在白名单内才注入 |
-| 继承 env | `HOME, LOGNAME, PATH, SHELL, TERM, USER` | `inheritedEnvironment(Set)` 可进一步收敛 |
+| 显式环境变量白名单 | 空（必须显式 allow） | `allowEnvironment(...)`；config.env 中的变量必须在白名单内才注入 |
+| 继承环境变量 | `HOME, LOGNAME, PATH, SHELL, TERM, USER` | `inheritedEnvironment(Set)` 可进一步收敛 |
 | `maxServers` | 16 | 超限抛 IllegalStateException |
 | `maxArguments` | 64 | 参数个数 |
 | `maxArgumentChars` | 16,384 | 单参数字符数 |
@@ -78,16 +78,16 @@ StdioMcpServerConfig.fromJson(node);   // {command, args, env, cwd}；
 | `outputTailChars` | 65,536 | 输出尾部保留 |
 | `maxLifetime` | 30 分钟 | 进程最长存活 |
 | `stopTimeout` | 2s | 停止等待 |
-| cwd | policy workspace | 解析真实路径后必须位于 workspace 内且为目录（防符号链接逃逸） |
+| `cwd`（工作目录） | policy workspace | 解析真实路径后必须位于 workspace 内且为目录（防符号链接逃逸） |
 
 ### 运行时语义
 
 - 相同规范化配置（SHA-256 cacheKey）并发首次调用只启动一个进程；进程终止自动移除缓存。
-- stdout 仅接受换行分隔的 JSON-RPC，支持跨 chunk 响应和请求 ID 关联。
+- 标准输出（stdout）仅接受换行分隔的 JSON-RPC，支持跨块（chunk）响应和请求 ID 关联。
 - 超时、取消、进程异常退出及关闭都会清理 pending 请求；工具取消不会隐式重放 `tools/call`。
 - 注册为 `ContextualToolHandler`，透传取消信号；MCP 异常转为 `ToolResult.error`。
 - `StdioMcpManager` 实现 `AutoCloseable` 并自动登记为 PluginManager 的 closeable：agent/worker 停机会关闭全部 MCP 子进程。
-- 敏感 env 只保存在配置与进程内存中，不写入 state-dir、能力快照或日志。
+- 敏感环境变量只保存在配置与进程内存中，不写入 state-dir、能力快照或日志。
 
 ## 服务端 MCP 注册管理
 

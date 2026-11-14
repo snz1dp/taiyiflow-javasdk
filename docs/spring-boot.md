@@ -45,9 +45,9 @@ taiyiflow:
     search: true                         # SearchPlugin
 ```
 
-### Hook Bean 自动挂载
+### 钩子（Hook）Bean 自动挂载
 
-容器中的四类 Hook Bean 会按 `orderedStream()` 顺序自动挂到全局：
+容器中的四类钩子 Bean 会按 `orderedStream()` 顺序自动挂到全局：
 
 ```java
 @Bean
@@ -104,7 +104,7 @@ taiyiflow:
     worker-id: backend-worker-1    # 非空白 → 预置身份；为空则必须提供 WorkerRegistrar Bean
     display-name: 后端数字员工
     workspace: /var/lib/taiyiflow/worker
-    state-dir: /var/lib/taiyiflow/runtime-state   # 空白按 null → 内存 Outbox
+    state-dir: /var/lib/taiyiflow/runtime-state   # 空白按 null → 内存发件箱（Outbox）
     role: COLLABORATION_WORKER     # COLLABORATION_WORKER / PRIMARY_CLI
     abilities: []                  # 如 [shell, files, search]
     client-id: ""
@@ -117,13 +117,13 @@ taiyiflow:
     approval-channel: PLATFORM     # PLATFORM / LOCAL_CALLBACK
 ```
 
-注意：worker 段**没有** `request-timeout` 键（取 `taiyiflow.request-timeout`），也没有 outbox 限额键（用默认 1000/1MiB/16MiB/32）。
+注意：worker 段**没有** `request-timeout` 键（取 `taiyiflow.request-timeout`），也没有发件箱（outbox）限额键（用默认 1000/1MiB/16MiB/32）。
 
 ### 必须与可选 Bean
 
 | Bean 类型 | 必须性 | 缺省行为 |
 |-----------|--------|---------|
-| `WorkerIdentityValidator` | **必须**（Builder 硬校验） | 无则启动失败 |
+| `WorkerIdentityValidator` | **必须**（构建器硬校验） | 无则启动失败 |
 | `WorkerAuth` | 可选 | 缺省 `WorkerAuth.apiKey(taiyiflow.api-key)`；可注册 JWT/persistentToken |
 | `WorkerRegistrar` | worker-id 为空时必须 | 向第三方系统注册身份 |
 | `WorkerTaskHandler` | 可选 | 内置 AgentSession 路由 |
@@ -136,7 +136,7 @@ taiyiflow:
 @Bean
 public WorkerIdentityValidator identityValidator() {
     return (identity, role, abilities) -> {
-        // 对接第三方 IAM / 注册中心校验 workerId 与认证主体的绑定
+        // 对接第三方身份与访问管理（IAM）/ 注册中心校验 workerId 与认证主体的绑定
         if (!iamClient.isBound(identity.workerId())) {
             throw new IllegalStateException("workerId not bound: " + identity.workerId());
         }

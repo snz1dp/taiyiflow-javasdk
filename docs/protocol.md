@@ -8,7 +8,7 @@
 
 - `StreamProtocol.AUTO`（默认）：读取服务端 `GET /api/v1/config` 的 `stream_protocol` 字段（`sse` / `websocket`）；读取失败或未知值回退 WebSocket。
 - `StreamProtocol.SSE` / `StreamProtocol.WEBSOCKET`：显式覆盖。
-- `sseFallbackEnabled=true`（默认）：WS 失败时回退 SSE。
+- `sseFallbackEnabled=true`（默认）：WS 失败时回退服务器推送事件（SSE）。
 
 ### WebSocket
 
@@ -17,7 +17,7 @@
 - 首帧后服务端不再读 WS：**工具结果禁止 WS 回传**，必须走 REST。
 - 服务端推送封套：`{"event": "...", "data": {...}}`；消息正文在 `data.chunk`。
 
-### SSE
+### 服务器推送事件（SSE）
 
 - 端点：`POST /api/v1/run/{flow_id}/stream`，请求体为 `ChatRequest`，鉴权 `Authorization: Bearer`。
 - 事件封套与 WS 相同。
@@ -35,7 +35,7 @@
 | `message_id` | 消息 ID |
 | `files` | 输入文件（服务端路径列表） |
 | `request_type` | 请求类型（agent/plan/ask 等） |
-| `parent_id` | 父 run（子任务） |
+| `parent_id` | 父执行轮次（run，子任务） |
 | `reasoning` / `internet_search` / `knowledge_scopes` / `knowledge_docs` | 能力开关与知识库范围 |
 | `requested_skill_names` / `available_tools` / `client_mcp_servers` | 技能、工具清单与客户端 MCP 配置 |
 | `client_id` / `device_id` / `client_type` | 客户端标识 |
@@ -73,8 +73,8 @@
 ## 工具调用与结果回传
 
 - 工具调用经流内 `client_tool` / `mcp_tool` / `built_in` 事件下发，由 `ClientToolCallParser` 解析为 `ToolCall`。
-- 结果回传：`POST /api/v1/agents/client/call/result`，payload 字段：`flow_id, session_id, message_id, run_id, call_id, success, result, error_message`。
-- 回传失败进入 ReportOutbox 补偿（见 [execution-control.md](execution-control.md)）。
+- 结果回传：`POST /api/v1/agents/client/call/result`，载荷（payload）字段：`flow_id, session_id, message_id, run_id, call_id, success, result, error_message`。
+- 回传失败进入 ReportOutbox 补传发件箱补偿（见 [execution-control.md](execution-control.md)）。
 
 ## 执行控制 REST
 
@@ -99,7 +99,7 @@
 |--------|------|------|
 | `SessionClient` | `/api/v1/agents/flows/{flowId}/sessions` | 会话 CRUD、消息查询/删除 |
 | `MemoryClient` | `/api/v1/agents/memories` | 记忆 list/create/get/forget/restore |
-| `FileClient` | 会话文件接口 | upload（multipart）/ download |
+| `FileClient` | 会话文件接口 | upload（multipart 表单上传）/ download |
 | `SkillClient` | `/api/v1/agents/skills` | 技能上传/内容/安装管理 |
 | `McpClient` | `/api/v1/agents/mcp/servers` | 服务端 MCP 注册管理 |
 | `ScheduleClient` | `/api/v1/agents/client/schedules` | 定时任务 CRUD、启停、执行记录与回报 |

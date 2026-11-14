@@ -40,6 +40,14 @@ const config = defineConfig({
     logo: undefined,
     siteTitle: '太乙智启 Java SDK',
 
+    // 界面文案中文化（VitePress 默认主题为英文）
+    darkModeSwitchLabel: '外观',
+    lightModeSwitchTitle: '切换到浅色主题',
+    darkModeSwitchTitle: '切换到深色主题',
+    sidebarMenuLabel: '菜单',
+    returnToTopLabel: '返回顶部',
+    skipToContentLabel: '跳到主要内容',
+
     nav: [
       { text: '首页', link: '/' },
       { text: '快速开始', link: '/getting-started' },
@@ -62,7 +70,7 @@ const config = defineConfig({
       {
         text: '核心能力',
         items: [
-          { text: 'Hook 体系与权限审批', link: '/hooks' },
+          { text: '钩子（Hook）体系与权限审批', link: '/hooks' },
           { text: '内置工具插件', link: '/plugins' },
           { text: 'MCP 接入', link: '/mcp' },
           { text: '执行控制与恢复', link: '/execution-control' }
@@ -92,7 +100,23 @@ const config = defineConfig({
     ],
 
     search: {
-      provider: 'local'
+      provider: 'local',
+      options: {
+        translations: {
+          button: { buttonText: '搜索', buttonAriaLabel: '搜索文档' },
+          modal: {
+            displayDetails: '显示详情',
+            resetButtonTitle: '清空',
+            backButtonTitle: '关闭',
+            noResultsText: '没有找到相关结果',
+            footer: {
+              selectText: '选择',
+              navigateText: '切换',
+              closeText: '关闭'
+            }
+          }
+        }
+      }
     },
 
     outline: {

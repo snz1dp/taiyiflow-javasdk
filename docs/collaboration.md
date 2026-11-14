@@ -1,6 +1,6 @@
 # 协同插件（CollaborationPlugin / SchedulePlugin）
 
-`taiyiflow-sdk-collaboration` 是零 core 依赖的独立模块，提供被动接收平台任务的协同 WebSocket 能力。`DigitalWorker` 构建在其之上；也可以单独使用做轻量无头 CLI。
+`taiyiflow-sdk-collaboration` 是零核心（core）依赖的独立模块，提供被动接收平台任务的协同 WebSocket 能力。`DigitalWorker` 构建在其之上；也可以单独使用做轻量无头命令行（CLI）。
 
 ## CollaborationPlugin
 
@@ -24,8 +24,8 @@ new CollaborationPlugin(baseUrl, accessTokenSupplier, role, clientId, deviceId, 
 ### 回调注册
 
 ```java
-plugin.onTask(task -> { ... });                 // Consumer<TaskDispatch>，虚拟线程池执行；成功后自动 ack
-plugin.onTaskDispatch(task -> { ...; return true; }); // Predicate，同步调用；返回 false 拒收（不发 ack）
+plugin.onTask(task -> { ... });                 // Consumer<TaskDispatch>，虚拟线程池执行；成功后自动回执（ack）
+plugin.onTaskDispatch(task -> { ...; return true; }); // Predicate，同步调用；返回 false 拒收（不发回执）
 // onTask 与 onTaskDispatch 互斥（互相置空）
 plugin.onTaskCancel(cancel -> { ... });
 plugin.onTaskSnapshot(snapshot -> { ... });     // 平台任务快照（对账）
@@ -67,7 +67,7 @@ plugin.sendScheduleError(scheduleId, runRecordId, error);
 | 事件 | 行为 |
 |------|------|
 | `connection.ready` | worker 角色拉取 `tasks.fetch_recent`（limit=20 游标翻页）补拉近期任务 |
-| `task.dispatch` | 按 version 去重，回调成功后自动 ack |
+| `task.dispatch` | 按 version 去重，回调成功后自动回执（ack） |
 | `task.cancel` | 触发 onTaskCancel |
 | `primary_task.dispatch` | primary 任务下发 |
 | `schedule_task.dispatch` | 按 `schedule:<runRecordId>` 去重 |
@@ -115,7 +115,7 @@ scheduler.shutdown();
 
 ## 独立使用（无 TaiyiAgent）
 
-collaboration 模块不依赖 core，可单独引入：
+collaboration 模块不依赖核心（core）模块，可单独引入：
 
 ```xml
 <dependency>

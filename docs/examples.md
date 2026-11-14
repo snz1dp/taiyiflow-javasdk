@@ -22,16 +22,16 @@ export TAIYIFLOW_FLOW_ID=your-flow-id
 | `MinimalExample` | 最小三步流式对话：builder → newSession + StreamHook → chat/await/shutdown | BASE_URL / API_KEY / FLOW_ID（缺失即退出） |
 | `MultiSessionExample` | 多会话并行：maxSessions(10)，3 个会话并发提问，CountDownLatch 等待全部结束 | 三个标准变量 |
 | `ToolTakeoverExample` | 工具接管与权限钩子：takeover 拦截 `get_weather` 返回模拟天气；PermissionHook 对 shell/bash 返回 DENY | 三个标准变量 |
-| `PauseResumeExample` | 暂停/恢复：首个 chunk 到达后 pause()，再 resume() 并 await(120s) 验证续跑完成 | 三个标准变量 |
+| `PauseResumeExample` | 暂停/恢复：首个增量块（chunk）到达后 pause()，再 resume() 并 await(120s) 验证续跑完成 | 三个标准变量 |
 | `RetryRepeatExample` | 重试与重放：chat → await → retry() → await → repeat() → await | 三个标准变量 |
-| `LocalApprovalExample` | 本地人工审批：PermissionPolicy.CONFIRM + 5 分钟审批超时，监听 client tool 事件后从 stdin 读 approve/deny | 三个标准变量 |
+| `LocalApprovalExample` | 本地人工审批：PermissionPolicy.CONFIRM + 5 分钟审批超时，监听客户端工具（client tool）事件后从标准输入（stdin）读 approve/deny | 三个标准变量 |
 | `CollaborationExample` | 无头 CLI 协同模式：WorkerAuth + TaskExecutor + PlatformTaskReporter，CollaborationPlugin 被动收任务并处理 release 推送，主线程常驻 | BASE_URL / API_KEY（**不需要 FLOW_ID**） |
 
 ## 各示例要点
 
 ### MinimalExample
 
-零 Hook 之外的最小配置即可跑通"发消息 → 收流式回复"。对应文档：[getting-started.md](getting-started.md)。
+零钩子（Hook）的最小配置即可跑通"发消息 → 收流式回复"。对应文档：[getting-started.md](getting-started.md)。
 
 ### MultiSessionExample
 
@@ -66,7 +66,7 @@ export TAIYIFLOW_FLOW_ID=your-flow-id
 
 ### CollaborationExample
 
-演示不依赖 TaiyiAgent 门面的底层协同链路：CollaborationPlugin 收任务 → TaskExecutor 幂等执行（running 前置回报）→ PlatformTaskReporter 平台回报。对应文档：[collaboration.md](collaboration.md)、[digital-worker.md](digital-worker.md)。
+演示不依赖 TaiyiAgent 门面的底层协同链路：CollaborationPlugin 收任务 → TaskExecutor 幂等执行（执行中状态前置回报）→ PlatformTaskReporter 平台回报。对应文档：[collaboration.md](collaboration.md)、[digital-worker.md](digital-worker.md)。
 
 ## 数字人配置化启动
 

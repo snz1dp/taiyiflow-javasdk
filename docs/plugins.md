@@ -1,8 +1,8 @@
 # 内置工具插件
 
-`taiyiflow-sdk-plugins` 提供本地工具执行能力。所有插件通过 `PluginManager` 注册，工具调用统一经过权限、Hook、并发调度与取消链。
+`taiyiflow-sdk-plugins` 提供本地工具执行能力。所有插件通过 `PluginManager` 注册，工具调用统一经过权限、钩子（Hook）、并发调度与取消链。
 
-> `TaiyiAgent` 默认不注册任何插件；Spring Boot Starter 按 `taiyiflow.plugins.*` 开关自动注册。
+> `TaiyiAgent` 默认不注册任何插件；Spring Boot 启动器（Starter）按 `taiyiflow.plugins.*` 开关自动注册。
 
 ## 注册入口
 
@@ -38,13 +38,13 @@ new ShellPlugin(Path workingDirectory, List<String> allowedCommands, long timeou
 
 | 参数 | 类型 | 必填 | 默认 | 说明 |
 |------|------|------|------|------|
-| `command` | string | 是 | — | 自定义 tokenizer 解析引号/转义，**不经系统 shell**；未闭合引号报错 |
+| `command` | string | 是 | — | 自定义分词器（tokenizer）解析引号/转义，**不经系统 shell**；未闭合引号报错 |
 | `cwd` | string | 否 | 构造时工作目录 | 相对路径基于工作目录解析；normalize + realpath 双重校验不得逃逸沙盒 |
 | `background` | boolean | 否 | false | true 时立即返回 `started=true` 与 `process_handle` |
 | `scan_workspace` / `scanWorkspace` | boolean | 否 | 自动判定 | 是否做工作区变更审计扫描 |
 | `fileOperations` / `file_operations` | array | 否 | 空 | 声明式文件操作：`type`、`path` 必填，`newPath`、`is_artifact`（默认 true）可选 |
 
-**白名单校验**：对分词后的第一个 token 精确匹配（不做路径归一化），不在白名单返回 `Command not in whitelist: ...`。
+**白名单校验**：对分词后的第一个词元（token）精确匹配（不做路径归一化），不在白名单返回 `Command not in whitelist: ...`。
 
 **自动扫描判定**：解释器命令（python/python3/node/deno/bun/bash/sh/zsh）自动扫描；构建命令（npm/yarn/pnpm/mvn/mvnw/gradle/gradlew/cargo/go/make）且子命令含 run/build/install/test/generate/compile/package 之一时自动扫描。
 
@@ -64,11 +64,11 @@ new ShellPlugin(Path workingDirectory, List<String> allowedCommands, long timeou
 限制与语义（默认值）：
 
 - 最多 **64** 个后台进程；满时先驱逐最旧的已结束进程，仍满则拒绝新进程。
-- stdout/stderr 各自保留 **65,536 字符尾部环形缓冲**，达到上限仍持续 draining；读取偏移落在已丢弃区间时 `offset_reset=true`。
+- 标准输出/标准错误（stdout/stderr）各自保留 **65,536 字符尾部环形缓冲**，达到上限仍持续 draining；读取偏移落在已丢弃区间时 `offset_reset=true`。
 - 停止时先对子孙进程逆序 destroy，优雅等待 **2s** 后 destroyForcibly。
 - 跨会话、未知或进程重启后的旧句柄返回 `status=lost, error=unknown_or_lost`；不会按旧 PID kill，也不会重启原命令。
 - 会话取消、agent/worker 停机会清理后台进程；暂停/恢复不会终止它们。
-- 进程表仅存内存，不写结果 Outbox；启用工作区扫描时进程退出后补扫产物。
+- 进程表仅存内存，不写结果补传发件箱（Outbox）；启用工作区扫描时进程退出后补扫产物。
 - 进程状态：`running` / `stopping` / `stopped` / `exited`。
 
 进程信息字段：`process_handle, status, command[], cwd, session_id, run_id?, task_id?, created_at, ended_at?, exit_code`。
@@ -134,7 +134,7 @@ new SearchPlugin(Path sandboxRoot);
 
 ## WorkspaceAudit（工作区审计）
 
-有界的纯内存工作区**元数据基线**，用于 shell 命令前后 diff 做"尽力而为"的产物发现。**不是事务日志，不提供回滚。**
+有界的纯内存工作区**元数据基线**，用于 shell 命令前后差异对比（diff）做"尽力而为"的产物发现。**不是事务日志，不提供回滚。**
 
 ```java
 new WorkspaceAudit(Path root);                 // Limits.defaults()
@@ -145,7 +145,7 @@ new WorkspaceAudit(Path root, Limits limits);
 
 - 忽略目录：`.git node_modules dist build out target __pycache__ .venv .cache .snz1dp .idea .vscode .gradle state state-dir credentials secrets` 等；跳过符号链接与临时文件。
 - 降级原因码：`MAX_DEPTH_EXCEEDED`、`MAX_ENTRIES_EXCEEDED`、`TIME_BUDGET_EXCEEDED`、`SCAN_CONFLICT`、`SCAN_IO_ERROR`；降级时 `complete=false`，绝不把部分结果当完整变更集。
-- diff 产出 create/edit/delete；声明过的路径从扫描结果排除；按指纹去重避免重复上报同一修订。
+- 差异对比产出 create/edit/delete；声明过的路径从扫描结果排除；按指纹去重避免重复上报同一修订。
 
 ## 自定义工具
 

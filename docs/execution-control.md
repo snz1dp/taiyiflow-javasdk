@@ -6,22 +6,22 @@
 
 | 方法 | 通道 | 语义 |
 |------|------|------|
-| `pause()` | 服务端 REST | 请求暂停当前 run，返回 `AgentLoopControlResult` |
+| `pause()` | 服务端 REST | 请求暂停当前执行轮次（run），返回 `AgentLoopControlResult` |
 | `cancel()` | 服务端 REST + 本地 | 服务端取消并关闭本地流资源 |
 | `interrupt()` | 仅本地 | 本地中断，不调服务端控制 API |
-| `attach()` | 服务端 | 重接仍在执行的原 run，**不创建新执行** |
-| `resume()` / `resume(checkpoint)` | 服务端 | 通过服务端检查点恢复，**不创建新执行** |
-| `retry()` | 新 run | 已持久化时续做，未持久化时重发原输入 |
-| `repeat()` | 新 run | 复用原始 input/tweaks/files/requestType |
+| `attach()` | 服务端 | 重接仍在执行的原轮次，**不创建新执行** |
+| `resume()` / `resume(checkpoint)` | 服务端 | 通过服务端检查点（checkpoint）恢复，**不创建新执行** |
+| `retry()` | 新轮次 | 已持久化时续做，未持久化时重发原输入 |
+| `repeat()` | 新轮次 | 复用原始输入、参数覆盖、文件与请求类型（input/tweaks/files/requestType） |
 
 ```java
 session.pause();
 session.resume();                 // 自动发现并恢复可续跑检查点；重接活跃 run 可改用 attach()
 session.await();
 
-session.retry();                  // 新 run
+session.retry();                  // 新轮次
 session.await();
-session.repeat();                 // 新 run
+session.repeat();                 // 新轮次
 session.await();
 ```
 
@@ -37,13 +37,13 @@ session.resume(checkpoints.get(0));
 
 ## 断线恢复策略
 
-默认 `RecoveryPolicy.MANUAL`：断线后不自动动作，由调用者决定 attach/resume/retry。
+默认 `RecoveryPolicy.MANUAL`：断线后不自动动作，由调用者决定重接（attach）/恢复（resume）/重试（retry）。
 
 设置 `.recoveryPolicy(RecoveryPolicy.AUTO)` 后，SDK 按退避策略依次对账并选择：
 
-1. **attach**：原 run 仍在执行 → 重接；
-2. **checkpoint resume**：存在可续跑检查点 → 恢复；
-3. **自动 start**：仅当确认原执行丢失，且不存在 waiting/pending/uncertain 工具副作用时才允许。
+1. **重接（attach）**：原轮次仍在执行 → 重接；
+2. **检查点恢复（checkpoint resume）**：存在可续跑检查点 → 恢复；
+3. **自动启动（start）**：仅当确认原执行丢失，且不存在等待中/待处理/不确定（waiting/pending/uncertain）工具副作用时才允许。
 
 状态未知或平台不可达时不会盲目重发。可调参数：
 
@@ -58,9 +58,9 @@ session.resume(checkpoints.get(0));
 
 > DigitalWorker 的恢复默认值与 TaiyiAgent 不同：worker 默认 `AUTO`，TaiyiAgent 默认 `MANUAL`。
 
-## 工具结果回传与 Outbox
+## 工具结果回传与补传发件箱（Outbox）
 
-工具结果通过 REST `POST /api/v1/agents/client/call/result` 回传（首帧后服务端不再读 WS，禁止 WS 回传）。回传失败进入补偿 Outbox：
+工具结果通过 REST `POST /api/v1/agents/client/call/result` 回传（首帧后服务端不再读 WS，禁止 WS 回传）。回传失败进入补偿发件箱（Outbox）：
 
 ### ReportOutbox
 
@@ -80,12 +80,12 @@ session.resume(checkpoints.get(0));
 | `maxEntries` | 1000 条 |
 | `maxEntryBytes` | 1 MiB |
 | `maxTotalBytes` | 16 MiB |
-| `maxRetries` | 32（耗尽转 DEAD_LETTER） |
+| `maxRetries` | 32（耗尽转死信（DEAD_LETTER）） |
 
 语义要点：
 
 - 同 id 重复写入：结果一致幂等返回；不一致旧条目转死信（`result-conflict`）并抛 `ReportConflictException`。
-- 损坏/超限/身份不匹配文件移入 quarantine 隔离目录。
+- 损坏/超限/身份不匹配文件移入隔离（quarantine）目录。
 - 补传**只重放结果，不重新执行工具或任务**。
 - 冲突或损坏通过告警通知（worker 侧为 `WorkerHook.onError("report-outbox", ...)`）。
 
@@ -94,7 +94,7 @@ session.resume(checkpoints.get(0));
 ```java
 ToolResultReporter reporter = new ToolResultReporter(restClient);          // 3 次重试、500ms 初始退避
 reporter.report(toolCall, toolResult);                                     // 失败抛 ToolResultReportException
-reporter.reportPersisted(toolCall, toolResult);                            // 经 Outbox 持久化补偿
+reporter.reportPersisted(toolCall, toolResult);                            // 经发件箱（Outbox）持久化补偿
 reporter.flush();                                                          // 触发补传
 ```
 
@@ -102,9 +102,9 @@ reporter.flush();                                                          // �
 
 ## 审批与恢复的关系
 
-- `PermissionHook` 返回 ASK 后的等待裁决仅存进程内存：attach 前补偿重报，resume 时随检查点提交，不写入本地权威结果库。
-- 存在未确认工具副作用（waiting/pending/uncertain）时，AUTO 恢复不会自动 start。
-- 跨进程/跨实例恢复以平台任务、run/checkpoint 和已接收结果为权威；缺少关联或状态不明时保持 `REPORT_UNKNOWN` 等待人工处理。
+- `PermissionHook` 返回 ASK 后的等待裁决仅存进程内存：重接（attach）前补偿重报，恢复（resume）时随检查点提交，不写入本地权威结果库。
+- 存在未确认工具副作用（waiting/pending/uncertain）时，AUTO 恢复不会自动启动新执行。
+- 跨进程/跨实例恢复以平台任务、执行轮次/检查点（run/checkpoint）和已接收结果为权威；缺少关联或状态不明时保持 `REPORT_UNKNOWN` 等待人工处理。
 
 ## 会话状态机
 
