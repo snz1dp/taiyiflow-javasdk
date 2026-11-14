@@ -9,7 +9,7 @@ TaiyiAgent 的全部业务扩展收敛为 4 个钩子（Hook）服务提供接�
 | `StreamHook` | `onChunk` / `onEvent` / `onError` / `onClose` | 全部 default 空实现，消息流内部缓冲 |
 | `ToolExecutionHook` | `before` / `after` / `takeover` | before/after 原样透传；takeover 返回 null（走内置插件） |
 | `PermissionHook` | `onPermission` → `CompletableFuture<Decision>` | 按 `PermissionPolicy` 决策 |
-| `SessionHook` | `onStart` / `onFinish` / `onInterrupt` | 全部 default 空实现 |
+| `SessionHook` | `onStart` / `onFinish` / `onInterrupt` / `onClose` | 全部 default 空实现 |
 
 ## StreamHook
 
@@ -82,7 +82,10 @@ public interface PermissionHook {
 
 `PermissionPolicy.isMutating(toolName)`：
 
-- 固定写工具集合：`shell`、`bash`、`execute_command`、`shell_exec`、`process_stop`、`process_cleanup`、`task_stop`、`task_delete`、`task_cleanup`、`todo_write`、`file_edit`、`document_unstructured`、`write_file`。
+- Shell/进程：`shell`、`bash`、`execute_command`、`shell_exec`、`process_stop`、`process_cleanup`、`task_stop`、`task_delete`、`task_cleanup`。
+- 文件与其他本地状态：`write_file`、`file_edit`、`todo_write`、`document_unstructured`。
+- 定时任务：`schedule_create`、`schedule_update`、`schedule_delete`、`schedule_toggle`。
+- 技能：`skill_create`、`skill_upload`、`skill_delete`。
 - `taiyiflow-in-chrome__*` 前缀：除 `tabs_context`、`read_text`、`read_console` 外全部视为写。
 - `taiyiflow-computer__*` 前缀：除 `displays_context`、`windows_context`、`screenshot` 外全部视为写。
 - 其余工具名一律视为只读。
@@ -124,8 +127,13 @@ public interface SessionHook {
     default void onStart(String sessionId) {}
     default void onFinish(String sessionId) {}
     default void onInterrupt(String sessionId, String reason) {}
+    default void onClose(String sessionId) {}
 }
 ```
+
+- `onFinish`：一轮执行正常完成；此后会话仍可用于 retry/repeat 等后续操作，不等于会话对象销毁。
+- `onClose`：显式移除、同 ID 替换或 agent shutdown 导致真实会话关闭；每个会话最多触发一次，插件注册的同生命周期回调也会收到通知。
+- `StreamHook.onClose` 描述当前流关闭，与 `SessionHook.onClose` 的会话生命周期语义不同。
 
 注册方法名为 `onLifecycle`（Builder 与会话均是）：
 

@@ -52,8 +52,8 @@ taiyiflow:
     # user-dir: /var/lib/taiyiflow/user-skills
     # compat-dir: /var/lib/taiyiflow/compat-skills
     default-names: []                    # 默认全文技能；其余发现项发摘要
-    bundled-resources: []                # classpath 技能资源目录
-    tolerate-platform-failure: true
+    bundled-resources: []                # classpath 中具体的 SKILL.md 资源路径
+    tolerate-platform-failure: true       # 平台发现失败时保留其他来源并记录诊断
   browser:
     mode: DISABLED                       # DISABLED / HEADLESS / REMOTE_CDP
     # executable-path: /opt/pw-browsers/chromium-1148/chrome-linux/chrome
@@ -71,7 +71,7 @@ taiyiflow:
     #   Authorization: ${TAIYIFLOW_CDP_AUTHORIZATION}
 ```
 
-浏览器需另行引入 `io.taiyiflow:taiyiflow-sdk-browser:1.0.0-SNAPSHOT`。HEADLESS 与 REMOTE_CDP 二选一；`allowed-hosts` / `allowed-cidrs` 是访问边界，不能用宽泛公网规则替代业务白名单。远程 endpoint 与 Authorization 推荐通过环境变量占位注入，配置元数据和日志不得输出实际值。技能只提供提示内容，不自动扩大 available_tools、审批、沙盒或网络权限；`skill_create/upload/delete` 属于写操作，仍走 PermissionHook。
+浏览器需另行引入 `io.taiyiflow:taiyiflow-sdk-browser:1.0.0-SNAPSHOT`。HEADLESS 与 REMOTE_CDP 二选一；`allowed-hosts` / `allowed-cidrs` 是访问边界，不能用宽泛公网规则替代业务白名单。远程 endpoint 与 Authorization 推荐通过环境变量占位注入，配置元数据和日志不得输出实际值。技能只提供提示内容，不自动扩大 available_tools、审批、沙盒或网络权限；`skill_create/upload/delete` 属于写操作，仍走 PermissionHook。技能目录、frontmatter、来源覆盖、显式选择与供应语义见[技能配置与供应](skills.md)。
 
 ### 钩子（Hook）Bean 自动挂载
 

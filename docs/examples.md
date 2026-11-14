@@ -87,7 +87,7 @@ export TAIYIFLOW_FLOW_ID=your-flow-id
 
 ### SkillSupplyExample
 
-`TAIYIFLOW_SKILL_DIR` 指向包含 `<skill>/SKILL.md` 的目录。示例先发现并按名取回正文，再通过 `requested_skill_names` 显式选择技能发起会话。首帧不包含本机绝对路径；技能正文不扩大工具或权限范围。
+`TAIYIFLOW_SKILL_DIR` 指向包含 `<skill>/SKILL.md` 的目录。示例先发现并按名取回正文，再通过 `requested_skill_names` 显式选择技能发起会话。首帧不包含本机绝对路径；技能正文不扩大工具或权限范围。完整配置说明见[技能配置与供应](skills.md)。
 
 ## 数字人配置化启动
 

@@ -235,7 +235,7 @@ public interface WorkerHook {
 
 配置化入口的 `tools.*` 默认全部关闭。技能开启后，worker 为每个 flow 的 TaiyiAgent 注入同一个供应器，并注册 `skill_list/skill_fetch/skill_create/skill_upload/skill_delete`；默认工作区技能目录为 `<workspace>/.snz1dp/skills`，user/compat 目录只有显式配置才扫描。平台技能默认关闭，缓存按认证主体、flow、session、技能与版本隔离。
 
-技能正文属于不可信提示内容，不会扩大工具清单、审批、沙盒、网络、环境变量或子任务权限；`requires_env` 只报告缺失变量名。写技能工具仍经过 PermissionHook，首帧和恢复只复用技能快照，不把正文写入 command_payload 或长期结果库。配置化运行时当前只接受 `skills.sync-mode=DISABLED`，不会自动安装远端技能。
+技能正文属于不可信提示内容，不会扩大工具清单、审批、沙盒、网络、环境变量或子任务权限；`requires_env` 只报告缺失变量名。写技能工具仍经过 PermissionHook，首帧和恢复只复用技能快照，不把正文写入 command_payload 或长期结果库。配置化运行时当前只接受 `skills.sync-mode=DISABLED`，不会自动安装远端技能。技能目录、frontmatter、来源覆盖、显式选择和完整 Java 示例见[技能配置与供应](skills.md)。
 
 浏览器是 optional 模块，未启用时 `DigitalWorker` 不链接浏览器类；启用 HEADLESS/REMOTE_CDP 后才由 `DigitalWorkerMain` 创建注册器。浏览器瞬态状态不进入 Outbox，也不作为平台任务恢复依据。完整键树与容器要求见 [deployment.md](deployment.md)。
 

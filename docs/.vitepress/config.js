@@ -72,6 +72,7 @@ const config = defineConfig({
         items: [
           { text: '钩子（Hook）体系与权限审批', link: '/hooks' },
           { text: '内置工具插件', link: '/plugins' },
+          { text: '技能配置与供应', link: '/skills' },
           { text: 'MCP 接入', link: '/mcp' },
           { text: '执行控制与恢复', link: '/execution-control' }
         ]

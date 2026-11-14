@@ -115,8 +115,8 @@ tools:
     # user-dir: /var/lib/taiyiflow/user-skills # 仅显式配置才扫描
     # compat-dir: /var/lib/taiyiflow/compat-skills
     default-names: []
-    bundled-resources: []
-    tolerate-platform-failure: true
+    bundled-resources: []                         # classpath 中具体的 SKILL.md 资源路径
+    tolerate-platform-failure: true                # 默认 true；平台发现失败时保留其他来源
     sync-mode: DISABLED                       # 配置化运行时当前仅支持 DISABLED
   browser:
     mode: DISABLED                            # DISABLED | HEADLESS | REMOTE_CDP

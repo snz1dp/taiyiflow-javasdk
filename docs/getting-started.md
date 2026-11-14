@@ -37,6 +37,13 @@ cd taiyiflow-javasdk
     <version>1.0.0-SNAPSHOT</version>
 </dependency>
 
+<!-- 可选：Playwright 浏览器工具（HEADLESS / REMOTE_CDP） -->
+<dependency>
+    <groupId>io.taiyiflow</groupId>
+    <artifactId>taiyiflow-sdk-browser</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+</dependency>
+
 <!-- 可选：数字人运行时 -->
 <dependency>
     <groupId>io.taiyiflow</groupId>
@@ -52,7 +59,7 @@ cd taiyiflow-javasdk
 </dependency>
 ```
 
-模块依赖方向：`taiyiflow-sdk-collaboration` 零 core 依赖、可独立使用；`core` 依赖 `collaboration`；`plugins`、`worker`、`starter` 依赖 `core`。
+模块依赖方向：`taiyiflow-sdk-collaboration` 零 core 依赖、可独立使用；`core` 依赖 `collaboration`；`plugins`、`worker`、`starter` 依赖 `core`；可选 `browser` 依赖 `core` 与 `plugins`。
 
 ## 配置环境变量
 
@@ -111,13 +118,13 @@ import io.taiyiflow.sdk.plugins.BuiltinPlugins;
 import java.nio.file.Path;
 import java.util.List;
 
-// 全量注册：shell（含后台进程工具）+ file + search，共 13 个工具
+// 全量注册：shell（含后台进程及别名）+ file + search，共 20 个工具
 BuiltinPlugins.registerAll(
         agent.getPluginManager(),
         Path.of("/tmp/taiyiflow-sandbox"),   // 沙盒根目录
         List.of("ls", "cat", "echo"));       // shell 命令白名单
 
-// 或只读注册：search / grep / read_file / list_files，共 4 个工具
+// 或只读注册：search / grep / glob_files / read_file / list_files，共 5 个工具
 BuiltinPlugins.registerReadOnly(agent.getPluginManager(), Path.of("/tmp/taiyiflow-sandbox"));
 ```
 
@@ -136,11 +143,12 @@ BuiltinPlugins.registerReadOnly(agent.getPluginManager(), Path.of("/tmp/taiyiflo
 
 > 注意：examples 模块未配置默认 mainClass，必须通过 `-Dexec.mainClass` 指定示例类。
 
-全部 7 个示例的说明见 [examples.md](examples.md)。
+全部 12 个示例的说明见 [examples.md](examples.md)。
 
 ## 下一步
 
 - 多会话并行、Builder 全量配置：[agent-and-session.md](agent-and-session.md)
 - 工具接管与审批：[hooks.md](hooks.md)
+- 技能目录、供应与显式选择：[skills.md](skills.md)
 - 让 Java 进程成为常驻数字员工：[digital-worker.md](digital-worker.md)
 - Spring Boot 集成：[spring-boot.md](spring-boot.md)

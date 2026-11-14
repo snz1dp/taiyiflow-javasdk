@@ -7,10 +7,10 @@
 ## 注册入口
 
 ```java
-// 全量：Shell + File + Search，共 13 个工具
+// 全量：Shell 13 个 + File 4 个 + Search 3 个，共 20 个工具
 BuiltinPlugins.registerAll(PluginManager pm, Path sandboxRoot, List<String> allowedShellCommands);
 
-// 只读：search / grep / read_file / list_files，共 4 个工具
+// 只读：search / grep / glob_files / read_file / list_files，共 5 个工具
 BuiltinPlugins.registerReadOnly(PluginManager pm, Path sandboxRoot);
 ```
 
@@ -34,7 +34,7 @@ new ShellPlugin(Path workingDirectory, List<String> allowedCommands, long timeou
 - 前台输出上限 1,000,000 字符，超出截断并置 `outputTruncated=true`。
 - 超时（默认 30s）强杀进程及全部子孙进程，返回 `timedOut=true`。
 
-### 工具：shell / bash / execute_command（三个别名，同一处理器）
+### 工具：shell / bash / execute_command / shell_exec（四个别名，同一处理器）
 
 | 参数 | 类型 | 必填 | 默认 | 说明 |
 |------|------|------|------|------|
@@ -60,6 +60,8 @@ new ShellPlugin(Path workingDirectory, List<String> allowedCommands, long timeou
 | `process_output` | `process_handle`（别名 `handle`，必填）、`stdout_offset`（默认 0）、`stderr_offset`（默认 0） | 按流增量返回 `{data, next_offset, dropped_chars, offset_reset}` |
 | `process_stop` | `process_handle` 必填 | 停止注册表内匹配的进程树，返回 `stop_requested=true` |
 | `process_cleanup` | `process_handle` 可选 | 缺省清理本会话全部已结束进程；指定句柄但仍在运行则报错 |
+
+兼容别名：`task_list/task_output/task_stop/task_delete/task_cleanup` 分别复用进程列举、输出、停止和清理处理器，不代表平台任务。
 
 限制与语义（默认值）：
 
@@ -131,6 +133,73 @@ new SearchPlugin(Path sandboxRoot);
 | `path` | string | 否 | `.` | 搜索根目录（沙盒内） |
 
 返回 `{matches:[{file, line, content}], totalMatches, truncated}`；最多 **100** 条，达到即截断；仅遍历常规文件（不跟随符号链接），不可读文件静默跳过。
+
+`glob_files` 按 glob 匹配相对路径：`pattern` 默认 `**/*`、`path` 默认 `.`，返回 `{files, count, truncated}`，最多 1000 个排序后的常规文件。
+
+## 媒体理解：MediaUnderstandingPlugin
+
+```java
+BuiltinPlugins.registerMedia(agent.getPluginManager(), agent.getRestClient());
+```
+
+| 工具 | 能力 | 执行方式 |
+|------|------|----------|
+| `document_unstructured` | 文档结构化，支持 PDF、Office 及服务端允许的音视频文档输入 | 同步非流式运行 |
+| `image_understanding` | 图片内容理解 | 异步任务提交、轮询与取消 |
+| `audio_understanding` | 音频转写与内容分析 | 异步任务提交、轮询与取消 |
+| `video_understanding` | 视频画面、语音及整体内容分析 | 异步任务提交、轮询与取消 |
+
+输入使用 `path` 或 `paths`，可附 `input`、`input_type` 和 `working_directory`。文件从会话 workspace 解析并上传，媒体类型同时受 SDK 扩展名集合与 `/config` 服务端限制约束；图片不能走文档工具。平台必须配置对应的理解 Flow。提交或理解结果未知时返回保留本地上传信息的安全错误，不自动重放。
+
+## 技能工具：SkillTools
+
+`BuiltinPlugins.registerSkills(...)` 注册 `skill_list/fetch/create/upload/delete`，完整配置、权限和示例见[技能配置与供应](skills.md)。
+
+## 会话上下文与用户交互
+
+```java
+BuiltinPlugins.registerSessionContext(agent.getPluginManager(), agent::getFlowMetadata);
+BuiltinPlugins.registerAskUser(agent.getPluginManager(), userInteractionHandler);
+BuiltinPlugins.registerTodo(agent.getPluginManager());
+```
+
+- `session_context`：返回当前 flow/session/run/task、请求模式、能力快照、允许工具和 Flow Metadata。
+- `ask_user`：通过业务实现的 `UserInteractionHandler` 发起结构化问题，支持选项、多选、图片、超时和取消；未注入 handler 时不注册。
+- `todo_write`：整体替换当前会话的瞬态 TODO 列表，最多 100 项；仅存进程内存，真实 `SessionHook.onClose` 或 agent shutdown 时清理，不作为平台长期任务历史。
+
+## 平台定时工具：ScheduleTools
+
+```java
+BuiltinPlugins.registerSchedules(agent.getPluginManager(), agent.getRestClient());
+```
+
+注册 `schedule_list/create/update/delete/toggle/runs`，操作平台定时任务，不是本地 `SchedulePlugin` 的调度器。创建和更新支持 once/interval/cron，interval 最少 60 秒，cron 使用五段表达式；create/update/delete/toggle 属于写操作，仍走权限审批。
+
+## 浏览器工具：taiyiflow-sdk-browser
+
+浏览器是独立可选模块，默认 `DISABLED`。引入依赖后通过 `BrowserToolProvider` 注册：
+
+```java
+BrowserSettings settings = BrowserSettings.builder()
+    .mode(BrowserSettings.Mode.HEADLESS)
+    .executablePath(Path.of("/opt/pw-browsers/chromium/chrome"))
+    .allowedHosts(Set.of("docs.example.com"))
+    .executeJsEnabled(false)
+    .build();
+BrowserRuntime browser = BrowserToolProvider.register(
+    agent.getPluginManager(), agent.getRestClient(), settings);
+```
+
+工具统一使用 `taiyiflow-in-chrome__` 前缀，共 17 个：
+
+- 标签与导航：`tabs_context`、`tabs_create`、`navigate`、`set_view_size`、`wait_for`。
+- 页面操作：`click`、`type`、`hover`、`scroll`、`select_option`、`press_key`。
+- 读取与诊断：`get_element_info`、`get_element_ref`、`read_text`、`read_console`、`screenshot`。
+- 独立开关：`execute_js`，默认关闭。
+
+HEADLESS 使用 Playwright Chromium；REMOTE_CDP 连接指定端点，不枚举或接管已有用户标签，也不关闭外部浏览器。所有页面操作在单一驱动线程串行执行，会话只访问自己创建的标签。导航和网络访问受 `allowedHosts/allowedCidrs` 约束；远程 endpoint、header 和 query token 在日志与异常中脱敏。截图写入会话 workspace，`understand=true` 时复用平台图片理解，理解失败仍保留截图路径。
+
+崩溃、断连、超时或取消后，不自动重放 click/type/navigate/upload/JS 等有副作用操作。完整配置见 [Spring Boot 集成](spring-boot.md)、[构建与容器部署](deployment.md)及两个浏览器示例。
 
 ## WorkspaceAudit（工作区审计）
 

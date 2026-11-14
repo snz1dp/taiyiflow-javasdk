@@ -19,7 +19,8 @@ TaiyiAgent agent = TaiyiAgent.builder()
 | `baseUrl(String)` | 必填 | 平台地址，非空非 blank |
 | `apiKey(String)` | 必填（与 accessToken 二选一） | 静态 API 密钥（API Key） |
 | `accessToken(Supplier<String>)` | — | 动态令牌供应器，每次请求读取最新值 |
-| `flowId(String)` | 必填 | 绑定的智能体 flow |
+| `flowId(String)` | 与 `useServerDefaultFlow()` 二选一 | 显式绑定智能体 flow |
+| `useServerDefaultFlow()` | 关闭 | build 时读取 `/api/v1/config` 的 `default_flow_id`；与显式 flowId 互斥 |
 | `clientId(String)` | `~/.taiyiflow/client-id` 持久化标识 | 客户端标识 |
 | `deviceId(String)` | 回退 collaborationDeviceId | 设备标识 |
 | `connectTimeout(Duration)` | 10s | 连接超时 |
@@ -62,6 +63,8 @@ TaiyiAgent agent = TaiyiAgent.builder()
 | `toolRuntimeConfig(ToolRuntime.Config)` | 全局并发 8、单会话并发 2、队列 128、单工具超时 60s | 与 `toolRuntime(...)` 互斥 |
 | `toolRuntime(ToolRuntime)` | SDK 自建 | 注入共享运行时（注入后 agent 不负责 close） |
 | `restClient(RestClient)` | SDK 自建 | 高级传输注入 |
+| `workspace(Path)` | 未配置 | 会话工作区根目录；`workspaceFor(flowId, sessionId)` 创建确定性的隔离子目录 |
+| `skillSupplier(SkillSupplier, List<String>)` | 无 | 配置技能供应器与默认全文技能名单，见 [skills.md](skills.md) |
 
 ```java
 TaiyiAgent agent = TaiyiAgent.builder()
@@ -94,7 +97,8 @@ TaiyiAgent agent = TaiyiAgent.builder()
 
 ### build() 校验
 
-- `baseUrl`、`flowId` 非空非 blank；`apiKey` 或 `accessToken` 至少一个。
+- `baseUrl` 非空非 blank；`apiKey` 或 `accessToken` 至少一个。
+- 显式 `flowId` 与 `useServerDefaultFlow()` 必须二选一；后者要求平台 `/config` 返回非空 `default_flow_id`。
 - `toolRuntime` 与 `toolRuntimeConfig` 互斥；注入的 runtime 不能已关闭。
 - `permissionTimeout`、`recoveryBackoff`、`recoveryMaxAttempts`、`eventQueueCapacity` 按上表规则校验。
 
@@ -111,8 +115,11 @@ SessionClient sessions();                  // 会话/消息 CRUD
 SkillClient skills();                      // 技能上传/安装管理
 MemoryClient memories();                   // 长期记忆
 ScheduleClient schedules();                // 定时任务
-ConfigClient config();                     // 服务端配置
+ConfigClient config();                     // 服务端配置、默认 Flow 与媒体理解配置
 FileClient files();                        // 会话文件上传/下载
+FlowRunClient flowRuns();                  // 非流式同步/异步运行、任务轮询与取消
+FlowMetadata getFlowMetadata();            // Flow Metadata（进程内缓存）
+FlowMetadata refreshFlowMetadata();        // 强制刷新 Flow Metadata
 McpClient mcpServers();                    // 服务端 MCP 注册管理
 CollaborationTaskClient collaborationTasks(); // 协同任务生命周期上报
 ExecutionController executionControl();    // run 级暂停/取消/检查点查询
@@ -121,6 +128,10 @@ ExecutionController executionControl();    // run 级暂停/取消/检查点查�
 PluginManager getPluginManager();          // 工具注册表
 ToolRuntime getToolRuntime();
 SessionManager getSessionManager();
+Path getWorkspace();
+Path workspaceFor(String flowId, String sessionId);
+SkillSupplier getSkillSupplier();              // 未配置时为 null
+List<String> getDefaultSkillNames();
 CollaborationPlugin getCollaborationPlugin(); // 未启用协同时为 null
 
 // 流协议
@@ -130,6 +141,25 @@ StreamProtocol refreshStreamProtocol();
 // 补传本 flow 持久化的检查点首帧提交（不执行工具）
 void flushResumeReports();
 ```
+
+### Flow Metadata 与非流式运行
+
+`getFlowMetadata()` 读取 `GET /api/v1/run/{flow}/metadata`，提供名称、能力特性（features）、知识库和未建模扩展字段；首次成功后缓存，`refreshFlowMetadata()` 强制刷新。元数据只用于能力判断，不会自动开启本地工具或提升权限。
+
+`flowRuns()` 走非流式 `POST /api/v1/run/{flow}`，支持同步结果和异步任务：
+
+```java
+ChatRequest request = new ChatRequest("生成摘要", "flow-run-session");
+try (FlowRunClient runs = agent.flowRuns()) {
+    FlowRunClient.RunResult synchronous = runs.run(agent.getFlowId(), request);
+
+    FlowRunClient.Task submitted = runs.submitAsync(agent.getFlowId(), request);
+    FlowRunClient.Task finished = runs.await(submitted.taskId(),
+        FlowRunClient.PollOptions.defaults(Duration.ofMinutes(5)), null);
+}
+```
+
+异步提交只接受 HTTP 202 和有效 taskId；网络失败、非 202 或缺少 taskId 时抛 `SubmissionUnknownException`，提交结果未知，不得盲目重发。`await` 超时抛 `FlowRunTimeoutException` 并尽力请求取消；取消结果仍以平台任务状态为准。
 
 ## AgentSession API
 
