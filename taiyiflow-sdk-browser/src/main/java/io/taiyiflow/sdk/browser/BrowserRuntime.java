@@ -91,13 +91,15 @@ public final class BrowserRuntime implements SessionHook, AutoCloseable {
                 this::click);
         register(pluginManager, "type", "Type text into an element in an SDK-owned tab.",
                 selectorProperties() + "," + property("text", "string") + "," + property("clear", "boolean")
-                        + "," + property("submit", "boolean"), this::type, "text");
+                        + "," + property("submit", "boolean") + "," + property("append", "boolean")
+                        + "," + property("press_enter", "boolean"), this::type, "text");
         register(pluginManager, "hover", "Hover over an element.", selectorProperties(), this::hover);
         register(pluginManager, "scroll", "Scroll the page or an element.",
                 optionalSelectorProperties() + "," + property("delta_x", "integer") + ","
                         + property("delta_y", "integer"), this::scroll);
         register(pluginManager, "select_option", "Select an option by value or label.",
-                selectorProperties() + "," + property("value", "string") + "," + property("label", "string"),
+                selectorProperties() + "," + property("value", "string") + "," + property("label", "string")
+                        + "," + property("text", "string"),
                 this::selectOption);
         register(pluginManager, "press_key", "Press a key or supported modifier combination.",
                 property("key", "string") + ",\"modifiers\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},"
@@ -109,14 +111,26 @@ public final class BrowserRuntime implements SessionHook, AutoCloseable {
         pluginManager.register(tool(PREFIX + "screenshot",
                         "Save a bounded PNG screenshot in the session workspace.",
                         "{" + property("full_page", "boolean") + "," + property("understand", "boolean") + ","
-                                + property("input", "string") + "," + tabProperty() + "}"),
+                                + property("input", "string") + "," + property("input_value", "string") + ","
+                                + tabProperty() + "}"),
                 (PluginManager.ContextualToolHandler) this::screenshotTool);
         register(pluginManager, "read_text", "Read bounded page or element text.",
-                optionalSelectorProperties() + "," + property("max_characters", "integer"), this::readText);
+                optionalSelectorProperties() + "," + property("max_characters", "integer")
+                        + "," + property("max_chars", "integer"), this::readText);
         register(pluginManager, "read_console", "Read bounded console messages from an SDK-owned tab.",
                 property("limit", "integer") + "," + tabProperty(), this::readConsole);
         register(pluginManager, "execute_js", "Execute JavaScript only when the independent script switch is enabled.",
                 property("code", "string") + "," + tabProperty(), this::executeJs, "code");
+        // Explicit unsupported result instead of the generic "No handler for tool", so the model
+        // stops retrying a capability the Chromium-only runtime cannot provide.
+        pluginManager.register(tool(PREFIX + "set_browser_type",
+                        "Not supported: the SDK browser runtime is Chromium-only.",
+                        "{" + property("os", "string") + "," + property("browser", "string") + ","
+                                + tabProperty() + "}", "os", "browser"),
+                (PluginManager.ContextualToolHandler) (context, call) -> ToolResult.error(call.getId(),
+                        "set_browser_type is not supported (Chromium-only): the Java SDK browser runtime cannot"
+                                + " switch browser type or UserAgent presets. Do not retry this tool;"
+                                + " continue with the default Chromium browser."));
         pluginManager.registerCloseable(this);
         pluginManager.registerSessionHook(this);
     }
@@ -251,12 +265,17 @@ public final class BrowserRuntime implements SessionHook, AutoCloseable {
         Locator locator = locator(tab, arguments);
         String value = text(arguments, "text", null);
         if (value == null) throw new IllegalArgumentException("type requires text");
-        if (booleanValue(arguments, "clear", true)) {
+        // Electron aliases: append=true means do not clear; press_enter means submit.
+        boolean clear = has(arguments, "clear") ? booleanValue(arguments, "clear", true)
+                : !booleanValue(arguments, "append", false);
+        boolean submit = has(arguments, "submit") ? booleanValue(arguments, "submit", false)
+                : booleanValue(arguments, "press_enter", false);
+        if (clear) {
             locator.fill(value, new Locator.FillOptions().setTimeout(timeoutMillis()));
         } else {
             locator.pressSequentially(value, new Locator.PressSequentiallyOptions().setTimeout(timeoutMillis()));
         }
-        if (booleanValue(arguments, "submit", false)) locator.press("Enter");
+        if (submit) locator.press("Enter");
         return MAPPER.createObjectNode().put("typed", true);
     }
 
@@ -284,7 +303,7 @@ public final class BrowserRuntime implements SessionHook, AutoCloseable {
         Tab tab = tab(context, arguments, false);
         Locator locator = locator(tab, arguments);
         String value = text(arguments, "value", "");
-        String label = text(arguments, "label", "");
+        String label = has(arguments, "label") ? text(arguments, "label", "") : text(arguments, "text", "");
         List<String> selected;
         if (!value.isBlank() == !label.isBlank()) {
             throw new IllegalArgumentException("select_option requires exactly one of value or label");
@@ -363,6 +382,11 @@ public final class BrowserRuntime implements SessionHook, AutoCloseable {
 
     private ToolResult screenshotTool(ToolExecutionContext context, ToolCall call) {
         JsonNode arguments = call.getArguments();
+        if (has(arguments, "path") && !text(arguments, "path", "").isBlank()) {
+            return ToolResult.error(call.getId(), "screenshot does not accept a custom path: screenshots are"
+                    + " always saved to the session workspace (.snz1dp/browser/). Remove the path argument"
+                    + " and use the returned path instead.");
+        }
         try {
             ObjectNode result = (ObjectNode) run(context, () -> screenshot(context, arguments));
             if (booleanValue(arguments, "understand", false)) {
@@ -410,7 +434,8 @@ public final class BrowserRuntime implements SessionHook, AutoCloseable {
     void addImageUnderstanding(ToolExecutionContext context, ObjectNode result, JsonNode arguments) {
         ObjectNode understandingArguments = MAPPER.createObjectNode();
         understandingArguments.put("path", result.path("path").asText());
-        understandingArguments.put("input", text(arguments, "input", ""));
+        understandingArguments.put("input", has(arguments, "input")
+                ? text(arguments, "input", "") : text(arguments, "input_value", ""));
         understandingArguments.put("screenshot_width_px", result.path("viewport_width").asInt());
         understandingArguments.put("screenshot_height_px", result.path("viewport_height").asInt());
         try {
@@ -423,8 +448,10 @@ public final class BrowserRuntime implements SessionHook, AutoCloseable {
 
     private JsonNode readText(ToolExecutionContext context, JsonNode arguments) {
         Tab tab = tab(context, arguments, false);
-        int maximum = bounded(intValue(arguments, "max_characters", settings.getMaxReadTextCharacters()),
-                1, settings.getMaxReadTextCharacters());
+        int requested = has(arguments, "max_characters")
+                ? intValue(arguments, "max_characters", settings.getMaxReadTextCharacters())
+                : intValue(arguments, "max_chars", settings.getMaxReadTextCharacters());
+        int maximum = bounded(requested, 1, settings.getMaxReadTextCharacters());
         String selector = selector(tab, arguments, false);
         String text = selector.isBlank() ? tab.page.locator("body").innerText()
                 : tab.page.locator(selector).innerText();
@@ -734,6 +761,10 @@ public final class BrowserRuntime implements SessionHook, AutoCloseable {
 
     private static String optionalSelectorProperties() {
         return property("selector", "string") + "," + tabProperty();
+    }
+
+    private static boolean has(JsonNode arguments, String name) {
+        return arguments != null && arguments.has(name);
     }
 
     private static String text(JsonNode arguments, String name, String fallback) {

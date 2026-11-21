@@ -82,6 +82,63 @@ class BrowserRealChromiumIT {
         }
     }
 
+    @Test
+    void electronParameterAliasesDriveRealPageActions() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/", exchange -> {
+            byte[] html = ("<!doctype html><body><div id='editable' contenteditable='true'>seed</div>"
+                    + "<select id='choice'><option value='1'>One</option><option value='2'>Two</option></select>"
+                    + "<script>document.getElementById('editable').addEventListener('keydown',"
+                    + "e=>{if(e.key==='Enter')document.body.dataset.entered='yes'})</script>"
+                    + "</body>").getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "text/html; charset=utf-8");
+            exchange.sendResponseHeaders(200, html.length);
+            exchange.getResponseBody().write(html);
+            exchange.close();
+        });
+        server.start();
+        PluginManager plugins = new PluginManager();
+        BrowserRuntime runtime = BrowserToolProvider.register(plugins,
+                new RestClient("http://127.0.0.1:1", "not-used", Duration.ofMillis(100)),
+                BrowserSettings.builder().mode(BrowserSettings.Mode.HEADLESS)
+                        .executablePath(Path.of(System.getenv("TAIYIFLOW_TEST_CHROMIUM_EXECUTABLE")))
+                        .allowedHosts(Set.of("localhost")).actionTimeout(Duration.ofSeconds(20)).build());
+        ToolExecutionContext context = ToolExecutionContext.builder("flow-a", "session-a")
+                .workspace(workspace).build();
+        try {
+            assertTrue(execute(plugins, context, "tabs_create", MAPPER.createObjectNode()
+                    .put("url", "http://localhost:" + server.getAddress().getPort() + "/")).isSuccess());
+
+            assertTrue(execute(plugins, context, "type", MAPPER.createObjectNode()
+                    .put("selector", "#editable").put("text", "ab")).isSuccess());
+            assertTrue(execute(plugins, context, "type", MAPPER.createObjectNode()
+                    .put("selector", "#editable").put("text", "cd")
+                    .put("append", true).put("press_enter", true)).isSuccess());
+            ToolResult appended = execute(plugins, context, "read_text",
+                    MAPPER.createObjectNode().put("selector", "#editable"));
+            assertTrue(appended.getResult().path("text").asText().startsWith("abcd"),
+                    appended.getResult()::toString);
+
+            ToolResult bounded = execute(plugins, context, "read_text", MAPPER.createObjectNode()
+                    .put("selector", "#editable").put("max_chars", 4));
+            assertTrue(bounded.getResult().path("truncated").asBoolean());
+            assertTrue(bounded.getResult().path("text").asText().startsWith("abcd"));
+
+            ToolResult selected = execute(plugins, context, "select_option", MAPPER.createObjectNode()
+                    .put("selector", "#choice").put("text", "Two"));
+            assertTrue(selected.isSuccess(), selected::getError);
+            assertTrue(selected.getResult().toString().contains("2"), selected.getResult()::toString);
+
+            ToolResult rejected = execute(plugins, context, "screenshot",
+                    MAPPER.createObjectNode().put("path", workspace.resolve("custom.png").toString()));
+            assertFalse(rejected.isSuccess());
+            assertTrue(rejected.getError().contains("does not accept a custom path"));
+        } finally {
+            if (runtime != null) runtime.close();
+            server.stop(0);
+        }
+    }
+
     private static ToolResult execute(PluginManager plugins, ToolExecutionContext context,
                                       String action, com.fasterxml.jackson.databind.JsonNode arguments) {
         return plugins.execute(context, new ToolCall(action, "taiyiflow-in-chrome__" + action, arguments));
