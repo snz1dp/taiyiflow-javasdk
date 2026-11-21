@@ -27,6 +27,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -296,6 +297,31 @@ class AgentSessionRecoveryTest {
     }
 
     @Test
+    void freshSessionAdoptsCheckpointIdentityForPlatformDrivenResume() throws Exception {
+        streamBehaviors.add((exchange, request) -> complete(exchange));
+        agent = newAgent(RecoveryPolicy.MANUAL, 1);
+        AgentSession session = agent.newSession("session-1");
+
+        ResumableCheckpoint checkpoint = new ResumableCheckpoint();
+        checkpoint.setId("checkpoint-1");
+        checkpoint.setSessionId("session-1");
+        checkpoint.setRunId("run-1");
+        checkpoint.setVersion(5);
+        checkpoint.setStatus("ready");
+        session.resume(checkpoint);
+
+        assertTrue(session.await(Duration.ofSeconds(5)));
+        assertEquals(SessionState.DONE, session.getState());
+        assertEquals(1, streamRequests.size());
+        JsonNode resume = streamRequests.get(0);
+        assertEquals("resume", resume.required("execution_mode").asText());
+        assertEquals("run-1", resume.required("run_id").asText());
+        assertEquals("checkpoint-1", resume.required("checkpoint_id").asText());
+        assertEquals(5, resume.required("checkpoint_version").asInt());
+        assertEquals(0, checkpointCalls.get());
+    }
+
+    @Test
     void unacknowledgedToolResultIsReplayedBeforeAttach() throws Exception {
         streamBehaviors.add(this::toolCallAndHold);
         streamBehaviors.add((exchange, request) -> complete(exchange));
@@ -357,6 +383,190 @@ class AgentSessionRecoveryTest {
         assertEquals(SessionState.ERROR, session.getState());
         assertEquals(1, streamRequests.size());
         assertEquals(1, toolResultCalls.get());
+    }
+
+    @Test
+    void pauseAbortsInFlightToolDiscardsLateResultAndResumeRestoresExecution() throws Exception {
+        streamBehaviors.add(this::toolCallAndHold);
+        streamBehaviors.add((exchange, request) -> {
+            openSse(exchange);
+            sendEvent(exchange, "client_tool", """
+                    {"function":{"id":"call-1","name":"get_weather","arguments":{"city":"Beijing"}},
+                     "context":{"session_id":"session-1","run_id":"run-1","message_id":"message-1"}}
+                    """);
+            sendEvent(exchange, "close", "{\"run_finished\":true}");
+            exchange.close();
+        });
+        agent = newAgent(RecoveryPolicy.MANUAL, 1);
+        AtomicInteger invocations = new AtomicInteger();
+        CountDownLatch toolStarted = new CountDownLatch(1);
+        CountDownLatch toolRelease = new CountDownLatch(1);
+        AtomicBoolean interrupted = new AtomicBoolean();
+        agent.getPluginManager().register("get_weather", call -> {
+            if (invocations.incrementAndGet() == 1) {
+                toolStarted.countDown();
+                while (toolRelease.getCount() > 0) {
+                    try {
+                        toolRelease.await();
+                    } catch (InterruptedException e) {
+                        interrupted.set(true);
+                    }
+                }
+            }
+            return ToolResult.success(call.getId(), mapper.createObjectNode().put("temperature", 22));
+        });
+        AgentSession session = agent.newSession("session-1").chat("weather");
+        awaitRun(session);
+        assertTrue(toolStarted.await(5, TimeUnit.SECONDS));
+
+        session.pause();
+        assertEquals(SessionState.PAUSED, session.getState());
+        awaitValue(interrupted::get);
+        toolRelease.countDown();
+        assertEquals(0, toolResultCalls.get(), "late result after pause must not be reported");
+
+        checkpointResponse = """
+                [{"id":"checkpoint-1","session_id":"session-1","run_id":"run-1",
+                  "status":"ready","version":3}]
+                """;
+        session.resume();
+
+        assertTrue(session.await(Duration.ofSeconds(5)), () -> "state=" + session.getState());
+        assertEquals(SessionState.DONE, session.getState());
+        assertEquals(2, invocations.get());
+        assertEquals(1, toolResultCalls.get(), "resume must restore tool execution with fresh cancellation");
+        assertEquals("call-1", toolResultRequests.get(0).required("call_id").asText());
+    }
+
+    @Test
+    void cancelAbortsInFlightToolAndNeverReportsItsResult() throws Exception {
+        streamBehaviors.add(this::toolCallAndHold);
+        agent = newAgent(RecoveryPolicy.MANUAL, 1);
+        CountDownLatch toolStarted = new CountDownLatch(1);
+        CountDownLatch toolRelease = new CountDownLatch(1);
+        AtomicBoolean interrupted = new AtomicBoolean();
+        CountDownLatch toolFinished = new CountDownLatch(1);
+        agent.getPluginManager().register("get_weather", call -> {
+            toolStarted.countDown();
+            while (toolRelease.getCount() > 0) {
+                try {
+                    toolRelease.await();
+                } catch (InterruptedException e) {
+                    interrupted.set(true);
+                }
+            }
+            toolFinished.countDown();
+            return ToolResult.success(call.getId(), mapper.createObjectNode().put("temperature", 22));
+        });
+        AgentSession session = agent.newSession("session-1").chat("weather");
+        awaitRun(session);
+        assertTrue(toolStarted.await(5, TimeUnit.SECONDS));
+
+        session.cancel();
+        assertEquals(SessionState.CANCELLED, session.getState());
+        awaitValue(interrupted::get);
+        toolRelease.countDown();
+        assertTrue(toolFinished.await(5, TimeUnit.SECONDS));
+        assertEquals(0, toolResultCalls.get(), "late result after cancel must not be reported");
+    }
+
+    @Test
+    void resumeStreamWithoutFirstEventTimesOutAndRetries() throws Exception {
+        streamBehaviors.add(this::initialRunAndEof);
+        streamBehaviors.add((exchange, request) -> {
+            openSse(exchange);
+            awaitInitialRelease();
+            exchange.close();
+        });
+        streamBehaviors.add((exchange, request) -> complete(exchange));
+        checkpointResponse = """
+                [{"id":"checkpoint-2","session_id":"session-1","run_id":"run-1",
+                  "status":"ready","version":4}]
+                """;
+        agent = newAgent(RecoveryPolicy.AUTO, 3);
+
+        AgentSession session = agent.newSession("session-1").chat("hello");
+        ((AgentSessionImpl) session).resumeEstablishTimeout(Duration.ofMillis(200));
+
+        assertTrue(session.await(Duration.ofSeconds(5)), () -> "state=" + session.getState()
+                + ", requests=" + streamRequests.size());
+        assertEquals(SessionState.DONE, session.getState());
+        assertEquals(3, streamRequests.size());
+        assertEquals("resume", streamRequests.get(1).required("execution_mode").asText());
+        assertEquals("resume", streamRequests.get(2).required("execution_mode").asText());
+        assertEquals("checkpoint-2", streamRequests.get(2).required("checkpoint_id").asText());
+    }
+
+    @Test
+    void checkpointResumeIsBlockedWhileLeaseHeldElsewhere() throws Exception {
+        streamBehaviors.add(this::initialRunAndHold);
+        streamBehaviors.add((exchange, request) -> complete(exchange));
+        agent = newAgent(RecoveryPolicy.MANUAL, 1);
+        AgentSession session = agent.newSession("session-1").chat("hello");
+        awaitRun(session);
+        session.pause();
+        ResumableCheckpoint checkpoint = mapper.readValue("""
+                {"id":"checkpoint-1","session_id":"session-1","run_id":"run-1",
+                 "status":"ready","version":3}
+                """, ResumableCheckpoint.class);
+        ResumeLeaseRegistry leases = agent.getSessionManager().getResumeLeases();
+        assertTrue(leases.tryAcquire("session-1/checkpoint-1", "other-owner"));
+
+        IllegalStateException blocked = assertThrows(IllegalStateException.class,
+                () -> session.resume(checkpoint));
+        assertTrue(blocked.getMessage().contains("Resume lease"));
+        assertEquals(1, streamRequests.size());
+
+        leases.release("session-1/checkpoint-1", "other-owner");
+        session.resume(checkpoint);
+
+        assertTrue(session.await(Duration.ofSeconds(5)));
+        assertEquals(SessionState.DONE, session.getState());
+        assertEquals("resume", streamRequests.get(1).required("execution_mode").asText());
+        assertEquals("checkpoint-1", streamRequests.get(1).required("checkpoint_id").asText());
+        assertEquals(3, streamRequests.get(1).required("checkpoint_version").asInt());
+    }
+
+    @Test
+    void resumeLeaseIsHeldWhileResumedRunStreamsAndReleasedOnCompletion() throws Exception {
+        CountDownLatch resumeRelease = new CountDownLatch(1);
+        CountDownLatch resumeEventSeen = new CountDownLatch(1);
+        streamBehaviors.add(this::initialRunAndHold);
+        streamBehaviors.add((exchange, request) -> {
+            openSse(exchange);
+            sendEvent(exchange, "message", """
+                    {"chunk":"resumed","run_id":"run-1","event_id":"event-2"}
+                    """);
+            resumeEventSeen.countDown();
+            try {
+                assertTrue(resumeRelease.await(5, TimeUnit.SECONDS));
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            sendEvent(exchange, "close", "{\"run_finished\":true}");
+            exchange.close();
+        });
+        agent = newAgent(RecoveryPolicy.MANUAL, 1);
+        AgentSession session = agent.newSession("session-1").chat("hello");
+        awaitRun(session);
+        session.pause();
+        ResumableCheckpoint checkpoint = mapper.readValue("""
+                {"id":"checkpoint-1","session_id":"session-1","run_id":"run-1",
+                 "status":"ready","version":3}
+                """, ResumableCheckpoint.class);
+        ResumeLeaseRegistry leases = agent.getSessionManager().getResumeLeases();
+
+        session.resume(checkpoint);
+        assertTrue(resumeEventSeen.await(5, TimeUnit.SECONDS));
+        awaitValue(() -> session.getState() == SessionState.STREAMING);
+        // Kickoff-only leasing would let a concurrent resume of the same checkpoint through here.
+        assertFalse(leases.tryAcquire("session-1/checkpoint-1", "other-owner"));
+
+        resumeRelease.countDown();
+        assertTrue(session.await(Duration.ofSeconds(5)));
+        assertEquals(SessionState.DONE, session.getState());
+        assertTrue(leases.tryAcquire("session-1/checkpoint-1", "other-owner"));
+        leases.release("session-1/checkpoint-1", "other-owner");
     }
 
     private TaiyiAgent newAgent(RecoveryPolicy policy, int attempts) {

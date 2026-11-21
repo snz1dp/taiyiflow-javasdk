@@ -2,6 +2,7 @@ package io.taiyiflow.sdk.core.report;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.taiyiflow.sdk.transport.rest.RestClient;
+import io.taiyiflow.sdk.transport.rest.ToolCallRecordClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -71,6 +72,31 @@ public final class ClientToolResultAdapter {
 
     public void flushNow() {
         flush(true);
+    }
+
+    /**
+     * Resolve dead-letter entries against platform tool call records (restart reconciliation).
+     * Received or pause-frozen entries are deleted; unknown states are kept and never replayed.
+     */
+    public int reconcileDeadLetters(ToolCallRecordClient records) {
+        PlatformResultReconciler reconciler = new PlatformResultReconciler(records);
+        int resolved = 0;
+        for (ReportOutbox.Entry entry : outbox.listAll()) {
+            if (entry.getType() != ReportOutbox.Type.CLIENT_TOOL_RESULT
+                    || entry.getStatus() != ReportOutbox.Status.DEAD_LETTER) {
+                continue;
+            }
+            if (reconciler.classifyClientPayload(entry.getPayload()) == PlatformResultReconciler.Verdict.UNKNOWN) {
+                continue;
+            }
+            try {
+                outbox.delete(entry.getId());
+                resolved++;
+            } catch (Exception storageFailure) {
+                log.warn("Unable to delete reconciled dead-letter {}", entry.getId());
+            }
+        }
+        return resolved;
     }
 
     private void flush(boolean force) {

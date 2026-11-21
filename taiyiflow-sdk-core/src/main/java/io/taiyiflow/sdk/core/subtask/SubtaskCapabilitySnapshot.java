@@ -23,6 +23,7 @@ public final class SubtaskCapabilitySnapshot {
     private final List<ClientSkillPackage> clientSkillPackages;
     private final List<String> mcpServerNames;
     private final Set<String> allowedTools;
+    private final String model;
 
     public SubtaskCapabilitySnapshot(Boolean reasoning, Boolean internetSearch, JsonNode knowledgeScopes,
                                      JsonNode knowledgeDocs, List<String> requestedSkillNames,
@@ -35,6 +36,14 @@ public final class SubtaskCapabilitySnapshot {
                                      JsonNode knowledgeDocs, List<String> requestedSkillNames,
                                      List<ClientSkillPackage> clientSkillPackages,
                                      List<String> mcpServerNames, Set<String> allowedTools) {
+        this(reasoning, internetSearch, knowledgeScopes, knowledgeDocs, requestedSkillNames,
+                clientSkillPackages, mcpServerNames, allowedTools, null);
+    }
+
+    public SubtaskCapabilitySnapshot(Boolean reasoning, Boolean internetSearch, JsonNode knowledgeScopes,
+                                     JsonNode knowledgeDocs, List<String> requestedSkillNames,
+                                     List<ClientSkillPackage> clientSkillPackages,
+                                     List<String> mcpServerNames, Set<String> allowedTools, String model) {
         this.reasoning = reasoning;
         this.internetSearch = internetSearch;
         this.knowledgeScopes = copy(knowledgeScopes);
@@ -43,6 +52,7 @@ public final class SubtaskCapabilitySnapshot {
         this.clientSkillPackages = clientSkillPackages == null ? List.of() : List.copyOf(clientSkillPackages);
         this.mcpServerNames = immutableStrings(mcpServerNames);
         this.allowedTools = allowedTools == null ? null : Set.copyOf(allowedTools);
+        this.model = model == null || model.isBlank() ? null : model;
     }
 
     public static SubtaskCapabilitySnapshot empty() {
@@ -53,7 +63,7 @@ public final class SubtaskCapabilitySnapshot {
         return new SubtaskCapabilitySnapshot(request.getReasoning(), request.getInternetSearch(),
                 request.getKnowledgeScopes(), request.getKnowledgeDocs(), request.getRequestedSkillNames(),
                 request.getClientSkillPackages(), serverNames(request.getClientMcpServers()),
-                allowedTools(request.getAvailableTools()));
+                allowedTools(request.getAvailableTools()), request.getModel());
     }
 
     public static SubtaskCapabilitySnapshot fromFeatures(JsonNode features, JsonNode availableTools) {
@@ -64,8 +74,10 @@ public final class SubtaskCapabilitySnapshot {
                 safe.get("knowledge_scopes"),
                 safe.get("knowledge_docs"),
                 strings(safe.get("requested_skill_names")),
+                List.of(),
                 strings(safe.get("client_mcp_server_names")),
-                allowedTools(availableTools));
+                allowedTools(availableTools),
+                text(safe.get("model")));
     }
 
     public ObjectNode toFeatures() {
@@ -74,6 +86,7 @@ public final class SubtaskCapabilitySnapshot {
         if (internetSearch != null) result.set("internet_search", MAPPER.getNodeFactory().booleanNode(internetSearch));
         if (knowledgeScopes != null) result.set("knowledge_scopes", knowledgeScopes.deepCopy());
         if (knowledgeDocs != null) result.set("knowledge_docs", knowledgeDocs.deepCopy());
+        if (model != null) result.put("model", model);
         result.set("requested_skill_names", stringsNode(requestedSkillNames));
         result.set("client_mcp_server_names", stringsNode(mcpServerNames));
         return result;
@@ -93,6 +106,7 @@ public final class SubtaskCapabilitySnapshot {
     public List<ClientSkillPackage> getClientSkillPackages() { return clientSkillPackages; }
     public List<String> getMcpServerNames() { return mcpServerNames; }
     public Set<String> getAllowedTools() { return allowedTools; }
+    public String getModel() { return model; }
 
     public void apply(ChatRequest request) {
         request.setReasoning(reasoning);
@@ -101,6 +115,7 @@ public final class SubtaskCapabilitySnapshot {
         request.setKnowledgeDocs(copy(knowledgeDocs));
         request.setRequestedSkillNames(requestedSkillNames);
         request.setClientSkillPackages(clientSkillPackages);
+        request.setModel(model);
         List<JsonNode> tools = new ArrayList<>();
         availableTools().forEach(tools::add);
         request.setAvailableTools(tools);
@@ -161,6 +176,10 @@ public final class SubtaskCapabilitySnapshot {
     private static String text(JsonNode value, String field) {
         JsonNode item = value == null ? null : value.get(field);
         return item != null && item.isTextual() ? item.asText() : null;
+    }
+
+    private static String text(JsonNode value) {
+        return value != null && value.isTextual() ? value.asText() : null;
     }
 
     private static JsonNode copy(JsonNode value) {

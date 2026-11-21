@@ -50,6 +50,47 @@ class CapabilityClientsTest {
     }
 
     @Test
+    void quotaAccessorsNormalizeServerValues() throws Exception {
+        ServiceConfig defaults = new ServiceConfig(MAPPER.createObjectNode());
+        assertNull(defaults.maxParallelismSubtask());
+        assertEquals(3, defaults.clientMaxSessionConcurrency());
+        assertNull(defaults.agentAutoLoopMaxRounds());
+        assertNull(defaults.maxInputTokens());
+        assertFalse(defaults.ontologyEnabled());
+
+        ServiceConfig configured = new ServiceConfig(MAPPER.readTree("{\"max_parallelism_subtask\":40,"
+                + "\"client_max_session_concurrency\":0,\"agent_auto_loop_max_rounds\":0,"
+                + "\"max_input_tokens\":4096,\"ontology\":true,\"future_quota_key\":{\"x\":1}}"));
+        assertEquals(32, configured.maxParallelismSubtask());
+        assertEquals(0, configured.clientMaxSessionConcurrency());
+        assertEquals(0, configured.agentAutoLoopMaxRounds());
+        assertEquals(4096, configured.maxInputTokens());
+        assertTrue(configured.ontologyEnabled());
+        assertTrue(configured.raw().has("future_quota_key"));
+
+        ServiceConfig invalid = new ServiceConfig(MAPPER.readTree("{\"max_parallelism_subtask\":-1,"
+                + "\"client_max_session_concurrency\":null,\"agent_auto_loop_max_rounds\":\"six\","
+                + "\"max_input_tokens\":0,\"ontology\":\"true\"}"));
+        assertNull(invalid.maxParallelismSubtask());
+        assertEquals(3, invalid.clientMaxSessionConcurrency());
+        assertNull(invalid.agentAutoLoopMaxRounds());
+        assertNull(invalid.maxInputTokens());
+        assertFalse(invalid.ontologyEnabled());
+
+        ServiceConfig zero = new ServiceConfig(MAPPER.readTree("{\"max_parallelism_subtask\":0}"));
+        assertEquals(0, zero.maxParallelismSubtask());
+    }
+
+    @Test
+    void metadataToleratesGraphSearchAndOntologyFeatures() throws Exception {
+        FlowMetadata metadata = new FlowMetadata(MAPPER.readTree("{\"id\":\"flow\",\"owner_appid\":\"app\","
+                + "\"name\":\"Agent\",\"features\":[\"reasoning\",\"graph_search\",\"ontology\"]}"));
+        assertTrue(metadata.supports("graph_search"));
+        assertTrue(metadata.supports("ontology"));
+        assertTrue(metadata.supportsReasoning());
+    }
+
+    @Test
     void synchronousAndAsynchronousRunContracts() throws Exception {
         AtomicReference<String> runBody = new AtomicReference<>();
         AtomicInteger polls = new AtomicInteger();

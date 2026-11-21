@@ -16,6 +16,10 @@ public interface PermissionHook {
         ASK
     }
 
+    /** Decision with an optional model-facing reason (e.g. a dangerous-command deny message). */
+    record PermissionResult(Decision decision, String reason) {
+    }
+
     /**
      * Called when a tool call requires permission approval.
      *
@@ -24,4 +28,12 @@ public interface PermissionHook {
      * @return the asynchronous permission decision
      */
     CompletableFuture<Decision> onPermission(String sessionId, ToolCall toolCall);
+
+    /**
+     * Evaluation entry point used by the dispatcher; hooks may override it to attach a reason.
+     * The default delegates to {@link #onPermission(String, ToolCall)} without a reason.
+     */
+    default CompletableFuture<PermissionResult> evaluate(String sessionId, ToolCall toolCall) {
+        return onPermission(sessionId, toolCall).thenApply(decision -> new PermissionResult(decision, null));
+    }
 }

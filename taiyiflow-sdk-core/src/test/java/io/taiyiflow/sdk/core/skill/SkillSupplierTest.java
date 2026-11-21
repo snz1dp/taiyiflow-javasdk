@@ -65,6 +65,30 @@ class SkillSupplierTest {
     }
 
     @Test
+    void whiteboardCategoryRequiresNonEntryWhiteboardTools() throws Exception {
+        Path workspace = temp.resolve("workspace");
+        Path directory = Files.createDirectories(workspace.resolve("whiteboard"));
+        Files.writeString(directory.resolve("SKILL.md"),
+                "---\nname: whiteboard\ncategory: whiteboard\nmetadata:\n  request_types:\n    - agent\n---\n\nbody");
+        write(workspace, "whiteboard-meta", "body", "tool_category: whiteboard");
+        SkillSupplier supplier = supplier(workspace, null);
+
+        SkillQuery closed = new SkillQuery("flow", "session", "agent", "principal", Set.of());
+        SkillQuery entryOnly = new SkillQuery("flow", "session", "agent", "principal", Set.of("whiteboard_open"));
+        SkillQuery open = new SkillQuery("flow", "session", "agent", "principal",
+                Set.of("whiteboard_open", "whiteboard_write"));
+        SkillQuery unknownTools = new SkillQuery("flow", "session", "agent", "principal", null);
+
+        assertTrue(supplier.visibleSkills(closed, selection()).isEmpty());
+        assertTrue(supplier.visibleSkills(entryOnly, selection()).isEmpty());
+        assertNull(supplier.fetch(entryOnly, selection(), "whiteboard"));
+        assertEquals(2, supplier.visibleSkills(open, selection()).size());
+        assertNotNull(supplier.fetch(open, selection(), "whiteboard"));
+        assertNotNull(supplier.fetch(open, selection(), "whiteboard-meta"));
+        assertEquals(2, supplier.visibleSkills(unknownTools, selection()).size());
+    }
+
+    @Test
     void disabledLocalSupplyClosesFindAndFetch() throws Exception {
         Path workspace = temp.resolve("workspace");
         write(workspace, "one", "body");

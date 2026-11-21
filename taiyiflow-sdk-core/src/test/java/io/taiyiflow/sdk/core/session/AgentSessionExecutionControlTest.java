@@ -99,6 +99,29 @@ class AgentSessionExecutionControlTest {
     }
 
     @Test
+    void pausedSessionStillOccupiesConcurrencySlot() throws Exception {
+        TaiyiAgent limited = TaiyiAgent.builder()
+                .baseUrl("http://127.0.0.1:" + server.getAddress().getPort())
+                .apiKey("key")
+                .flowId("flow-1")
+                .streamProtocol(StreamProtocol.SSE)
+                .maxSessionConcurrency(1)
+                .build();
+        try {
+            AgentSession session = limited.newSession("session-1").chat("hello");
+            awaitRun(session);
+            session.pause();
+            assertEquals(SessionState.PAUSED, session.getState());
+
+            AgentSession other = limited.newSession("session-2");
+            IllegalStateException error = assertThrows(IllegalStateException.class, () -> other.chat("second"));
+            assertTrue(error.getMessage().contains("Maximum concurrent executing sessions reached: 1"));
+        } finally {
+            limited.shutdown();
+        }
+    }
+
+    @Test
     void failedPauseRestoresStreamingState() throws Exception {
         pauseStatus = 409;
         AgentSession session = agent.newSession("session-1").chat("hello");

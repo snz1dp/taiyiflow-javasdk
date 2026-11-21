@@ -147,6 +147,30 @@ class ReportOutboxTest {
         assertTrue(outbox.listAll().isEmpty());
     }
 
+    @Test
+    void checkpointSubmissionFailureClassifiesDeterministicRejectsAndTransientErrors() throws Exception {
+        InMemoryReportOutbox outbox = new InMemoryReportOutbox();
+        CheckpointToolResultsAdapter adapter = new CheckpointToolResultsAdapter(outbox);
+        CheckpointToolResultsAdapter.Prepared prepared = adapter.prepare(
+                checkpoint(), "flow-1", "session-1", Map.of("call-1",
+                        MAPPER.createObjectNode().put("call_id", "call-1").put("result", "done")));
+
+        assertEquals(ReportOutbox.Status.PENDING,
+                adapter.failed(prepared.entry(), new RestClient.RestException(429, "{\"detail\":\"rate_limited\"}")));
+        assertEquals(ReportOutbox.Status.PENDING,
+                adapter.failed(prepared.entry(), new RestClient.RestException(503, "unavailable")));
+        assertEquals(ReportOutbox.Status.PENDING,
+                adapter.failed(prepared.entry(), new IOException("offline")));
+        assertEquals("network-error", outbox.find(prepared.entry().getId()).orElseThrow().getLastError());
+
+        assertEquals(ReportOutbox.Status.DEAD_LETTER,
+                adapter.failed(prepared.entry(),
+                        new RestClient.RestException(400, "{\"detail\":\"tool_call_paused\"}")));
+        assertEquals("tool_call_paused", outbox.find(prepared.entry().getId()).orElseThrow().getLastError());
+        assertEquals(ReportOutbox.Status.DEAD_LETTER,
+                adapter.failed(prepared.entry(), new RestClient.RestException(422, "{\"detail\":\"identity_mismatch\"}")));
+    }
+
     private static ResumableCheckpoint checkpoint() {
         ResumableCheckpoint checkpoint = new ResumableCheckpoint();
         checkpoint.setId("checkpoint-1");

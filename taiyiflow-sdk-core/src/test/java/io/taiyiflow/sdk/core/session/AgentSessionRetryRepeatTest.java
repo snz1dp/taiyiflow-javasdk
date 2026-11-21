@@ -143,6 +143,27 @@ class AgentSessionRetryRepeatTest {
     }
 
     @Test
+    void retryPreservesExplicitClientTypeAndToolSnapshot() throws Exception {
+        streamEvents.add("event: message\ndata: {\"chunk\":\"done\",\"run_id\":\"run-1\"}\n\n");
+        streamEvents.add("event: close\ndata: {\"run_finished\":true}\n\n");
+        AgentSession session = agent.newSession("session-1");
+        io.taiyiflow.sdk.transport.envelope.ChatRequest request =
+                new io.taiyiflow.sdk.transport.envelope.ChatRequest("original", "session-1");
+        request.setClientType("custom");
+        request.setAvailableTools(List.of(mapper.createObjectNode().put("name", "server_side_tool")));
+        session.chat(request);
+        assertTrue(session.await(Duration.ofSeconds(5)));
+        assertEquals("custom", requests.get(0).required("client_type").asText());
+
+        session.retry();
+
+        assertTrue(session.await(Duration.ofSeconds(5)));
+        JsonNode retry = requests.get(1);
+        assertEquals("custom", retry.required("client_type").asText());
+        assertEquals("server_side_tool", retry.required("available_tools").get(0).required("name").asText());
+    }
+
+    @Test
     void activeSessionCannotRetryOrRepeat() throws Exception {
         holdFirstStream = true;
         streamEvents.add("""

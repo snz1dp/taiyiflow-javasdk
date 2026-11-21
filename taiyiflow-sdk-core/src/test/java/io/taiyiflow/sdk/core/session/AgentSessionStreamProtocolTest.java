@@ -70,7 +70,8 @@ class AgentSessionStreamProtocolTest {
         assertNull(result.error.get());
         assertEquals(List.of("hello"), result.chunks);
         assertEquals(SessionState.DONE, ((AgentSessionImpl) result.session).getState());
-        assertEquals(1, configCalls.get());
+        // One fetch for protocol resolution, one for the session-concurrency quota; both cached per agent.
+        assertEquals(2, configCalls.get());
         assertEquals("worker", configCredential.get());
         assertEquals("worker", streamCredential.get());
         assertEquals("Bearer test-key", authorization.get());
@@ -80,7 +81,7 @@ class AgentSessionStreamProtocolTest {
     }
 
     @Test
-    void explicitSseSkipsConfig() throws Exception {
+    void explicitSseSkipsProtocolResolutionButStillFetchesQuotaOnce() throws Exception {
         AtomicInteger configCalls = new AtomicInteger();
         server.createContext("/api/v1/config", exchange -> {
             configCalls.incrementAndGet();
@@ -97,8 +98,43 @@ class AgentSessionStreamProtocolTest {
         assertTrue(result.closed.await(5, TimeUnit.SECONDS));
         assertNull(result.error.get());
         assertEquals(List.of("explicit"), result.chunks);
-        assertEquals(0, configCalls.get());
+        // Quota fetch only (fails with 500 -> unlimited); protocol resolution never touches /config.
+        assertEquals(1, configCalls.get());
         result.agent.shutdown();
+    }
+
+    @Test
+    void terminalDoneNotifiesPluginSessionFinish() throws Exception {
+        server.createContext("/api/v1/config", exchange ->
+                respond(exchange, 200, "application/json", "{\"stream_protocol\":\"sse\"}"));
+        server.createContext("/api/v1/run/flow-1/stream", exchange ->
+                respond(exchange, 200, "text/event-stream",
+                        "event: message\ndata: {\"chunk\":\"hello\"}\n\n"
+                                + "event: close\ndata: {\"run_finished\":true}\n\n"));
+        server.start();
+        TaiyiAgent agent = TaiyiAgent.builder()
+                .baseUrl(baseUrl)
+                .apiKey("test-key")
+                .flowId("flow-1")
+                .streamProtocol(StreamProtocol.SSE)
+                .credentialHeaders(Map.of("X-Credential-Username", "worker"))
+                .build();
+        CountDownLatch finished = new CountDownLatch(1);
+        AtomicReference<String> finishedSession = new AtomicReference<>();
+        agent.getPluginManager().registerSessionHook(new io.taiyiflow.sdk.hooks.SessionHook() {
+            @Override
+            public void onFinish(String sessionId) {
+                finishedSession.set(sessionId);
+                finished.countDown();
+            }
+        });
+        AgentSession session = agent.newSession("session-1");
+        session.chat("hello");
+
+        assertTrue(finished.await(5, TimeUnit.SECONDS), "DONE must notify plugin session hooks");
+        assertEquals("session-1", finishedSession.get());
+        assertEquals(SessionState.DONE, ((AgentSessionImpl) session).getState());
+        agent.shutdown();
     }
 
     private SessionResult runSession(StreamProtocol protocol) {

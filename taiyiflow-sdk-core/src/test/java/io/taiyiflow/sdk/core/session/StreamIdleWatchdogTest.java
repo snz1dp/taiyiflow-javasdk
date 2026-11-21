@@ -63,4 +63,43 @@ class StreamIdleWatchdogTest {
         watchdog.toolFinished(arm, timedOut::countDown);
         assertTrue(timedOut.await(1, TimeUnit.SECONDS));
     }
+
+    @Test
+    void derivesToolTimeoutWithMarginAndFloor() {
+        assertEquals(Duration.ofMinutes(31), StreamIdleWatchdog.deriveToolTimeout(null));
+        assertEquals(Duration.ofMinutes(31), StreamIdleWatchdog.deriveToolTimeout(Duration.ofMinutes(29)));
+        assertEquals(Duration.ofMinutes(60), StreamIdleWatchdog.deriveToolTimeout(Duration.ofMinutes(59)));
+        assertEquals(Duration.ofMinutes(61), StreamIdleWatchdog.deriveToolTimeout(Duration.ofHours(1)));
+    }
+
+    @Test
+    void scaledMediaAndSubtaskToolPeriodsSurviveIdleWindow() throws Exception {
+        // 1200s idle / 60min media tool period / 61min subtask tool period, scaled by 1/60000.
+        long idleMillis = Duration.ofSeconds(1200).toMillis() / 60000;
+        long mediaMillis = StreamIdleWatchdog.deriveToolTimeout(Duration.ofMinutes(59)).toMillis() / 60000;
+        long subtaskMillis = StreamIdleWatchdog.deriveToolTimeout(Duration.ofHours(1)).toMillis() / 60000;
+        for (long toolMillis : new long[]{mediaMillis, subtaskMillis}) {
+            StreamIdleWatchdog watchdog = new StreamIdleWatchdog(
+                    scheduler, Duration.ofMillis(idleMillis), Duration.ofMillis(toolMillis));
+            CountDownLatch timedOut = new CountDownLatch(1);
+            StreamIdleWatchdog.Arm arm = watchdog.start("run-1", 1, new Object(), timedOut::countDown);
+            watchdog.toolStarted(arm, timedOut::countDown);
+            Thread.sleep(idleMillis * 2);
+            assertEquals(1, timedOut.getCount(), "long tool must not be cut by the idle window");
+            watchdog.toolFinished(arm, timedOut::countDown);
+            assertTrue(timedOut.await(1, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void zeroIdleTimeoutDisablesIdleChecksButKeepsToolGuard() throws Exception {
+        StreamIdleWatchdog watchdog = new StreamIdleWatchdog(
+                scheduler, Duration.ZERO, Duration.ofMillis(80));
+        CountDownLatch timedOut = new CountDownLatch(1);
+        StreamIdleWatchdog.Arm arm = watchdog.start("run-1", 1, new Object(), timedOut::countDown);
+        Thread.sleep(120);
+        assertEquals(1, timedOut.getCount(), "idle checks disabled");
+        watchdog.toolStarted(arm, timedOut::countDown);
+        assertTrue(timedOut.await(1, TimeUnit.SECONDS), "tool-period guard still active");
+    }
 }

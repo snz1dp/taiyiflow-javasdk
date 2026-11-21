@@ -15,6 +15,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -25,6 +26,9 @@ import java.util.concurrent.atomic.AtomicLong;
 public final class SubtaskOrchestrator implements PluginManager.ContextualToolHandler, AutoCloseable {
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final Map<String, Integer> MODE_RANK = Map.of("ask", 0, "plan", 1, "agent", 2);
+    // Electron _shouldRunRemotely second layer: these platform statuses mean another executor already owns the task.
+    private static final Set<String> DISPATCHED_STATUSES =
+            Set.of("dispatched", "acknowledged", "running", "success", "failed");
 
     private final CollaborationTaskClient tasks;
     private final String localClientId;
@@ -60,7 +64,7 @@ public final class SubtaskOrchestrator implements PluginManager.ContextualToolHa
     }
 
     public void register(PluginManager plugins) {
-        plugins.register("run_subtask", this);
+        plugins.register("run_subtask", this, maxTimeout);
         plugins.registerCloseable(this);
     }
 
@@ -85,10 +89,16 @@ public final class SubtaskOrchestrator implements PluginManager.ContextualToolHa
                         return failure(resultIndex, null, "interrupted", "Subtask scheduling interrupted");
                     }
                     CallState state = new CallState(resultIndex);
-                    states.add(state);
-                    active.add(state);
+                    // Remote-target detached requests stay out of the parent cancellation chain.
+                    // Local-target requests register conservatively (dispatch status is unknown
+                    // before create); executeOne deregisters them if they turn out detached.
+                    boolean detached = !request.waitForCompletion() && !targetsCurrentClient(request);
+                    if (!detached) {
+                        states.add(state);
+                        active.add(state);
+                    }
                     try {
-                        return executeOne(context, request, state);
+                        return executeOne(context, request, state, states);
                     } finally {
                         active.remove(state);
                         states.remove(state);
@@ -113,7 +123,8 @@ public final class SubtaskOrchestrator implements PluginManager.ContextualToolHa
         }
     }
 
-    private ObjectNode executeOne(ToolExecutionContext context, Request request, CallState state) {
+    private ObjectNode executeOne(ToolExecutionContext context, Request request, CallState state,
+                                  ConcurrentLinkedQueue<CallState> states) {
         if (context.getCancellation().isCancellationRequested()) {
             return failure(state.index, null, "cancelled", "Parent execution was cancelled");
         }
@@ -122,28 +133,63 @@ public final class SubtaskOrchestrator implements PluginManager.ContextualToolHa
         String childSessionId = UUID.randomUUID().toString();
         String childRunId = UUID.randomUUID().toString();
         ObjectNode payload = createPayload(context, request, idempotencyKey, batchId, childSessionId, childRunId);
-        JsonNode created;
+        JsonNode created = null;
+        boolean reconcile = false;
         try {
             created = tasks.create(payload);
+            // A 200 with an invalid body may still have persisted the task; reconcile instead of guessing.
+            if (!isValidTaskRecord(created)) reconcile = true;
         } catch (Exception exception) {
+            reconcile = true;
+        }
+        if (reconcile) {
             try {
                 created = findCreated(context.getRunId(), idempotencyKey, childSessionId, childRunId);
             } catch (Exception reconciliationFailure) {
                 return failure(state.index, null, "unknown",
                         "Task creation outcome is unknown; reconciliation failed");
             }
-            if (created == null) {
+            if (!isValidTaskRecord(created)) {
                 return failure(state.index, null, "unknown",
                         "Task creation outcome is unknown; no matching platform task was found");
             }
         }
-        if (created == null || !created.isObject() || text(created, "id") == null) {
-            return failure(state.index, null, "unknown", "Platform returned an invalid task record");
+        boolean localTarget = targetsCurrentClient(request);
+        // Electron/CLI second routing layer: a task the platform already dispatched is owned by
+        // another executor (possibly this worker's own task.dispatch path), so wait for the
+        // platform result instead of executing it locally a second time.
+        boolean runLocal = localTarget && !DISPATCHED_STATUSES.contains(text(created, "status"));
+        boolean detached = !request.waitForCompletion() && !runLocal;
+        if (detached) {
+            // Leave the parent cancellation chain before publishing taskId so a concurrent
+            // cancelAll cannot reach a task that is about to be returned as detached.
+            states.remove(state);
+            active.remove(state);
         }
         state.taskId = text(created, "id");
         state.version.set(created.path("version").asLong(0));
+        // A cancel may arrive during the creation REST window, before any executor is registered.
+        if (context.getCancellation().isCancellationRequested()) {
+            // Detached platform tasks survive parent cancellation; only report the cancelled call.
+            if (!detached) cancel(state);
+            return failure(state.index, state.taskId, "cancelled", "Parent execution was cancelled");
+        }
+        if (detached) {
+            // Electron detached semantics: the platform task keeps running after this call returns.
+            // Detached states were deregistered from states/active above, so parent cancel/close
+            // cannot reach them; execute()'s finally removes any still-registered state.
+            ObjectNode result = baseResult(state.index, state.taskId, text(created, "status"));
+            result.put("detached", true);
+            result.put("task_kind", "dialogue_subtask");
+            result.put("child_session_id", childSessionId);
+            result.put("child_run_id", childRunId);
+            result.put("source_session_id", context.getSessionId());
+            result.put("source_run_id", context.getRunId());
+            if (context.getMessageId() != null) result.put("source_message_id", context.getMessageId());
+            return result;
+        }
         try {
-            if (isLocal(request)) {
+            if (runLocal) {
                 if (localExecutor == null) throw new IllegalStateException("No local subtask executor is configured");
                 ObjectNode command = payload.deepCopy();
                 command.put("task_id", state.taskId);
@@ -164,31 +210,55 @@ public final class SubtaskOrchestrator implements PluginManager.ContextualToolHa
             return awaitTerminal(state, request.timeoutMillis(), context.getCancellation());
         } catch (Exception exception) {
             cancel(state);
-            return failure(state.index, state.taskId, "failed", safeMessage(exception));
+            String status = context.getCancellation().isCancellationRequested() ? "cancelled" : "failed";
+            return failure(state.index, state.taskId, status, safeMessage(exception));
         }
     }
 
     private ObjectNode awaitTerminal(CallState state, long timeoutMillis,
                                      ToolExecutionContext.Cancellation cancellation) throws Exception {
         long deadline = System.nanoTime() + timeoutMillis * 1_000_000L;
-        while (System.nanoTime() < deadline) {
-            if (cancellation.isCancellationRequested()) {
-                cancel(state);
-                return failure(state.index, state.taskId, "cancelled", "Parent execution was cancelled");
+        state.waiter = Thread.currentThread();
+        try {
+            while (System.nanoTime() < deadline) {
+                if (cancellation.isCancellationRequested()) {
+                    cancel(state);
+                    return failure(state.index, state.taskId, "cancelled", "Parent execution was cancelled");
+                }
+                JsonNode current;
+                try {
+                    current = tasks.get(state.taskId);
+                } catch (Exception exception) {
+                    if (cancellation.isCancellationRequested()) {
+                        return failure(state.index, state.taskId, "cancelled", "Parent execution was cancelled");
+                    }
+                    throw exception;
+                }
+                state.version.set(current.path("version").asLong(state.version.get()));
+                String status = text(current, "status");
+                if ("success".equals(status) || "succeeded".equals(status) || "completed".equals(status)) {
+                    ObjectNode result = baseResult(state.index, state.taskId, "success");
+                    result.set("result", current.path("result_payload").deepCopy());
+                    return result;
+                }
+                if ("failed".equals(status) || "cancelled".equals(status) || "expired".equals(status)) {
+                    return failure(state.index, state.taskId, status,
+                            text(current, "error_message") == null ? "Subtask " + status : text(current, "error_message"));
+                }
+                try {
+                    Thread.sleep(pollInterval.toMillis());
+                } catch (InterruptedException exception) {
+                    // cancel() interrupts the waiter so polling stops without waiting out the interval.
+                    if (!cancellation.isCancellationRequested()) {
+                        Thread.currentThread().interrupt();
+                        throw exception;
+                    }
+                    cancel(state);
+                    return failure(state.index, state.taskId, "cancelled", "Parent execution was cancelled");
+                }
             }
-            JsonNode current = tasks.get(state.taskId);
-            state.version.set(current.path("version").asLong(state.version.get()));
-            String status = text(current, "status");
-            if ("success".equals(status) || "succeeded".equals(status) || "completed".equals(status)) {
-                ObjectNode result = baseResult(state.index, state.taskId, "success");
-                result.set("result", current.path("result_payload").deepCopy());
-                return result;
-            }
-            if ("failed".equals(status) || "cancelled".equals(status) || "expired".equals(status)) {
-                return failure(state.index, state.taskId, status,
-                        text(current, "error_message") == null ? "Subtask " + status : text(current, "error_message"));
-            }
-            Thread.sleep(pollInterval.toMillis());
+        } finally {
+            state.waiter = null;
         }
         cancel(state);
         return failure(state.index, state.taskId, "timeout", "Subtask did not finish before its deadline");
@@ -196,9 +266,6 @@ public final class SubtaskOrchestrator implements PluginManager.ContextualToolHa
 
     private List<Request> parseRequests(JsonNode arguments, ToolExecutionContext context) {
         if (arguments == null || !arguments.isObject()) throw new IllegalArgumentException("run_subtask arguments must be an object");
-        if (arguments.path("wait_for_completion").isBoolean() && !arguments.path("wait_for_completion").booleanValue()) {
-            throw new IllegalArgumentException("Detached subtasks are not supported; wait_for_completion must be true");
-        }
         List<JsonNode> items = new ArrayList<>();
         if (arguments.has("subtasks")) {
             if (!arguments.path("subtasks").isArray() || arguments.path("subtasks").isEmpty()) {
@@ -216,10 +283,6 @@ public final class SubtaskOrchestrator implements PluginManager.ContextualToolHa
             ObjectNode value = item.isTextual() ? MAPPER.createObjectNode().put("prompt", item.asText()) :
                     item.isObject() ? (ObjectNode) item : null;
             if (value == null) throw new IllegalArgumentException("Each subtask must be a prompt or object");
-            if (value.path("wait_for_completion").isBoolean()
-                    && !value.path("wait_for_completion").booleanValue()) {
-                throw new IllegalArgumentException("Detached subtasks are not supported; wait_for_completion must be true");
-            }
             String prompt = text(value, "prompt");
             if (prompt == null) throw new IllegalArgumentException("Subtask prompt is required");
             String explicitMode = explicitMode(value, arguments);
@@ -231,7 +294,8 @@ public final class SubtaskOrchestrator implements PluginManager.ContextualToolHa
             long timeoutSeconds = positiveLong(value.has("timeout_seconds") ? value : arguments, "timeout_seconds",
                     Math.min(300, maxTimeout.toSeconds()));
             if (timeoutSeconds > maxTimeout.toSeconds()) throw new IllegalArgumentException("Subtask timeout exceeds configured maximum");
-            result.add(new Request(prompt, flowId, mode, targetClient, targetDevice, delivery, timeoutSeconds * 1000));
+            result.add(new Request(prompt, flowId, mode, targetClient, targetDevice, delivery, timeoutSeconds * 1000,
+                    waitForCompletion(value, arguments)));
         }
         return result;
     }
@@ -245,7 +309,8 @@ public final class SubtaskOrchestrator implements PluginManager.ContextualToolHa
                 .put("input_value", request.prompt())
                 .put("flow_id", request.flowId())
                 .put("request_mode", request.mode())
-                .put("parent_id", context.getRunId());
+                .put("parent_id", context.getRunId())
+                .put("wait_for_completion", request.waitForCompletion());
         SubtaskCapabilitySnapshot capabilities = context.getCapabilities();
         command.set("features", capabilities.toFeatures());
         command.set("available_tools", capabilities.availableTools());
@@ -280,10 +345,20 @@ public final class SubtaskOrchestrator implements PluginManager.ContextualToolHa
         return null;
     }
 
-    private boolean isLocal(Request request) {
-        return "local_default".equals(request.deliveryPolicy())
-                && (localClientId != null && localClientId.equals(request.targetClientId())
-                || localDeviceId != null && localDeviceId.equals(request.targetDeviceId()));
+    private boolean targetsCurrentClient(Request request) {
+        // Electron _subtaskTargetsCurrentClient: an explicit client target must match the local
+        // client id (unknown local id means not-local); a device target only mismatches when the
+        // local device id is known. delivery_policy is platform-side dispatch, not routing.
+        String targetClient = request.targetClientId();
+        if (targetClient != null && (localClientId == null || !localClientId.equals(targetClient))) {
+            return false;
+        }
+        String targetDevice = request.targetDeviceId();
+        return targetDevice == null || localDeviceId == null || localDeviceId.equals(targetDevice);
+    }
+
+    private static boolean isValidTaskRecord(JsonNode value) {
+        return value != null && value.isObject() && text(value, "id") != null;
     }
 
     private void cancelAll(ConcurrentLinkedQueue<CallState> states) {
@@ -292,6 +367,10 @@ public final class SubtaskOrchestrator implements PluginManager.ContextualToolHa
 
     private void cancel(CallState state) {
         if (state == null || state.taskId == null || !state.cancelRequested.compareAndSet(false, true)) return;
+        Thread waiter = state.waiter;
+        if (waiter != null) {
+            waiter.interrupt();
+        }
         String requestId = UUID.randomUUID().toString();
         try {
             JsonNode cancelled = tasks.cancel(state.taskId, requestId, state.version.get());
@@ -344,8 +423,16 @@ public final class SubtaskOrchestrator implements PluginManager.ContextualToolHa
 
     private static int countSuccessful(ArrayNode results) {
         int count = 0;
-        for (JsonNode result : results) if ("success".equals(result.path("status").asText())) count++;
+        for (JsonNode result : results) {
+            if ("success".equals(result.path("status").asText()) || result.path("detached").asBoolean(false)) count++;
+        }
         return count;
+    }
+
+    private static boolean waitForCompletion(JsonNode value, JsonNode root) {
+        JsonNode raw = value.has("wait_for_completion") ? value.get("wait_for_completion")
+                : root.get("wait_for_completion");
+        return raw == null || !raw.isBoolean() || raw.booleanValue();
     }
 
     private static long positiveLong(JsonNode value, String field, long fallback) {
@@ -376,12 +463,14 @@ public final class SubtaskOrchestrator implements PluginManager.ContextualToolHa
     }
 
     private record Request(String prompt, String flowId, String mode, String targetClientId,
-                           String targetDeviceId, String deliveryPolicy, long timeoutMillis) {
+                           String targetDeviceId, String deliveryPolicy, long timeoutMillis,
+                           boolean waitForCompletion) {
     }
 
     private static final class CallState {
         private final int index;
         private volatile String taskId;
+        private volatile Thread waiter;
         private final AtomicLong version = new AtomicLong();
         private final AtomicBoolean cancelRequested = new AtomicBoolean();
 

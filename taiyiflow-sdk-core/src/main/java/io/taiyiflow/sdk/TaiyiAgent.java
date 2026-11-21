@@ -23,9 +23,12 @@ import io.taiyiflow.sdk.transport.rest.ExecutionController;
 import io.taiyiflow.sdk.transport.rest.FileClient;
 import io.taiyiflow.sdk.transport.rest.McpClient;
 import io.taiyiflow.sdk.transport.rest.MemoryClient;
+import io.taiyiflow.sdk.transport.rest.ModelsClient;
 import io.taiyiflow.sdk.transport.rest.RestClient;
 import io.taiyiflow.sdk.transport.rest.ScheduleClient;
+import io.taiyiflow.sdk.transport.rest.ServiceConfig;
 import io.taiyiflow.sdk.transport.rest.SessionClient;
+import io.taiyiflow.sdk.transport.rest.SessionGroupClient;
 import io.taiyiflow.sdk.transport.rest.SkillClient;
 import io.taiyiflow.sdk.transport.stream.StreamProtocolResolver;
 import org.slf4j.Logger;
@@ -83,9 +86,12 @@ public class TaiyiAgent {
     private final ExecutorService executor;
     private final Duration connectTimeout;
     private final Duration requestTimeout;
+    private final Duration streamIdleTimeout;
+    private final Duration toolExecutionTimeout;
     private final Map<String, String> credentialHeaders;
     private final PermissionPolicy permissionPolicy;
     private final PermissionHook permissionHook;
+    private final io.taiyiflow.sdk.core.security.PermissionGate permissionGate;
     private final Duration permissionTimeout;
     private final int eventQueueCapacity;
     private final boolean sseFallbackEnabled;
@@ -100,8 +106,17 @@ public class TaiyiAgent {
     private final FlowMetadataClient flowMetadataClient;
     private final SkillSupplier skillSupplier;
     private final List<String> defaultSkillNames;
+    private final RequestDefaults requestDefaults;
+    private final List<Path> instructionDirectories;
+    private final Integer maxSessionConcurrency;
+    private final String clientType;
     private volatile FlowMetadata flowMetadata;
     private final Object metadataLock = new Object();
+    private volatile ServiceConfig serverConfig;
+    private volatile boolean serverConfigResolved;
+    private final Object serverConfigLock = new Object();
+    private volatile long serverConfigRetryAfterNanos;
+    static volatile long serverConfigNegativeCacheMs = 30_000;
 
     private TaiyiAgent(Builder builder) {
         this.baseUrl = builder.baseUrl;
@@ -111,9 +126,15 @@ public class TaiyiAgent {
         this.deviceId = builder.deviceId != null ? builder.deviceId : builder.collaborationDeviceId;
         this.connectTimeout = builder.connectTimeout;
         this.requestTimeout = builder.requestTimeout;
+        this.streamIdleTimeout = builder.streamIdleTimeout;
+        this.toolExecutionTimeout = builder.toolExecutionTimeout;
         this.credentialHeaders = Map.copyOf(builder.credentialHeaders);
         this.permissionPolicy = builder.permissionPolicy;
         this.permissionHook = builder.permissionHook;
+        this.permissionGate = new io.taiyiflow.sdk.core.security.PermissionGate(
+                builder.permissionSettings != null ? builder.permissionSettings
+                        : io.taiyiflow.sdk.core.security.PermissionSettings.builder()
+                                .policy(builder.permissionPolicy).build());
         this.permissionTimeout = builder.permissionTimeout;
         this.eventQueueCapacity = builder.eventQueueCapacity;
         this.sseFallbackEnabled = builder.sseFallbackEnabled;
@@ -139,6 +160,10 @@ public class TaiyiAgent {
         this.flowMetadataClient = new FlowMetadataClient(restClient);
         this.skillSupplier = builder.skillSupplier;
         this.defaultSkillNames = List.copyOf(builder.defaultSkillNames);
+        this.requestDefaults = builder.requestDefaults;
+        this.instructionDirectories = List.copyOf(builder.instructionDirectories);
+        this.maxSessionConcurrency = builder.maxSessionConcurrency;
+        this.clientType = builder.clientType;
         this.executionController = new ExecutionController(restClient, clientId, deviceId);
         this.streamProtocolResolver = new StreamProtocolResolver(restClient, builder.streamProtocol);
 
@@ -216,12 +241,37 @@ public class TaiyiAgent {
         return deviceId;
     }
 
+    /**
+     * First-frame client_type; default "device". The backend merges default built-in
+     * skills by this value, so changing it (e.g. to "desktop") changes the server-side
+     * skill set offered to the same flow.
+     */
+    public String getClientType() {
+        return clientType;
+    }
+
     public RestClient getRestClient() {
         return restClient;
     }
 
     public SessionClient sessions() {
         return new SessionClient(restClient);
+    }
+
+    public ModelsClient models() {
+        return new ModelsClient(restClient);
+    }
+
+    public SessionGroupClient sessionGroups() {
+        return new SessionGroupClient(restClient);
+    }
+
+    public io.taiyiflow.sdk.transport.rest.ToolCallRecordClient toolCallRecords() {
+        return new io.taiyiflow.sdk.transport.rest.ToolCallRecordClient(restClient);
+    }
+
+    public io.taiyiflow.sdk.transport.rest.NotificationClient notifications() {
+        return new io.taiyiflow.sdk.transport.rest.NotificationClient(restClient);
     }
 
     public SkillClient skills() {
@@ -238,6 +288,30 @@ public class TaiyiAgent {
 
     public ConfigClient config() {
         return new ConfigClient(restClient);
+    }
+
+    public io.taiyiflow.sdk.transport.rest.IntentionClient intentions() {
+        return new io.taiyiflow.sdk.transport.rest.IntentionClient(restClient);
+    }
+
+    public io.taiyiflow.sdk.transport.rest.ClientDirectoryClient clientDirectory() {
+        return new io.taiyiflow.sdk.transport.rest.ClientDirectoryClient(restClient);
+    }
+
+    public io.taiyiflow.sdk.transport.rest.QuotaCreditClient quotaCredits() {
+        return new io.taiyiflow.sdk.transport.rest.QuotaCreditClient(restClient);
+    }
+
+    public io.taiyiflow.sdk.transport.rest.PlatformProbeClient probes() {
+        return new io.taiyiflow.sdk.transport.rest.PlatformProbeClient(restClient);
+    }
+
+    public io.taiyiflow.sdk.transport.rest.AgentAppClient agentApps() {
+        return new io.taiyiflow.sdk.transport.rest.AgentAppClient(restClient);
+    }
+
+    public io.taiyiflow.sdk.transport.rest.AgentPluginClient agentPlugins() {
+        return new io.taiyiflow.sdk.transport.rest.AgentPluginClient(restClient);
     }
 
     public FileClient files() {
@@ -308,9 +382,16 @@ public class TaiyiAgent {
 
     /** Resume persisted first-frame submissions for this flow without executing any tools. */
     public void flushResumeReports() {
-        for (ReportOutbox.Entry entry : toolRuntime.getReportOutbox()
-                .list(ReportOutbox.Type.CHECKPOINT_TOOL_RESULTS)) {
-            if (!flowId.equals(entry.getFlowId()) || !entry.isDue()) {
+        for (ReportOutbox.Entry entry : toolRuntime.getReportOutbox().listAll()) {
+            if (entry.getType() != ReportOutbox.Type.CHECKPOINT_TOOL_RESULTS
+                    || !flowId.equals(entry.getFlowId())) {
+                continue;
+            }
+            if (entry.getStatus() == ReportOutbox.Status.DEAD_LETTER) {
+                reconcileDeadLetterCheckpoint(entry);
+                continue;
+            }
+            if (!entry.isDue()) {
                 continue;
             }
             AgentSessionImpl existing = sessionManager.getSession(entry.getSessionId());
@@ -324,6 +405,20 @@ public class TaiyiAgent {
                 log.warn("Unable to resume stored report {} for session {}",
                         entry.getId(), entry.getSessionId());
             }
+        }
+    }
+
+    private void reconcileDeadLetterCheckpoint(ReportOutbox.Entry entry) {
+        try {
+            io.taiyiflow.sdk.core.report.PlatformResultReconciler.Verdict verdict =
+                    new io.taiyiflow.sdk.core.report.PlatformResultReconciler(toolCallRecords())
+                            .classifyCheckpointPayload(entry.getPayload(), flowId,
+                                    entry.getSessionId(), entry.getRunId());
+            if (verdict != io.taiyiflow.sdk.core.report.PlatformResultReconciler.Verdict.UNKNOWN) {
+                toolRuntime.getReportOutbox().delete(entry.getId());
+            }
+        } catch (Exception exception) {
+            log.warn("Unable to reconcile dead-letter checkpoint submission {}", entry.getId());
         }
     }
 
@@ -359,6 +454,16 @@ public class TaiyiAgent {
         return requestTimeout;
     }
 
+    /** Stream idle watchdog timeout; zero disables idle checks. */
+    public Duration getStreamIdleTimeout() {
+        return streamIdleTimeout;
+    }
+
+    /** Explicit tool-period watchdog timeout, or null for registry-derived (max tool time + 60s, floor 31min). */
+    public Duration getToolExecutionTimeout() {
+        return toolExecutionTimeout;
+    }
+
     public Map<String, String> getCredentialHeaders() {
         return credentialHeaders;
     }
@@ -369,6 +474,11 @@ public class TaiyiAgent {
 
     public PermissionHook getPermissionHook() {
         return permissionHook;
+    }
+
+    /** Fine-grained gate used when no explicit permissionHook override is configured. */
+    public io.taiyiflow.sdk.core.security.PermissionGate getPermissionGate() {
+        return permissionGate;
     }
 
     public Duration getPermissionTimeout() {
@@ -393,6 +503,62 @@ public class TaiyiAgent {
 
     public List<String> getDefaultSkillNames() {
         return defaultSkillNames;
+    }
+
+    public RequestDefaults getRequestDefaults() {
+        return requestDefaults;
+    }
+
+    public List<Path> getInstructionDirectories() {
+        return instructionDirectories;
+    }
+
+    /**
+     * Effective limit for concurrently executing sessions started via chat().
+     * Explicit builder override wins; otherwise the server /config quota
+     * (client_max_session_concurrency, default 3). Returns -1 (unlimited) when
+     * /config could not be fetched — a documented deviation from Electron,
+     * which always has a cached config.
+     */
+    public int getMaxSessionConcurrency() {
+        if (maxSessionConcurrency != null) {
+            return maxSessionConcurrency;
+        }
+        ServiceConfig config = serverConfig();
+        return config != null ? config.clientMaxSessionConcurrency() : -1;
+    }
+
+    /** Server auto-loop round quota, or null when unset/unavailable. */
+    public Integer getServerAutoLoopMaxRounds() {
+        ServiceConfig config = serverConfig();
+        return config != null ? config.agentAutoLoopMaxRounds() : null;
+    }
+
+    private ServiceConfig serverConfig() {
+        if (serverConfigResolved) {
+            return serverConfig;
+        }
+        synchronized (serverConfigLock) {
+            if (serverConfigResolved) {
+                return serverConfig;
+            }
+            // A failed /config fetch is cached only briefly so a recovered server is picked up
+            // later, instead of pinning session concurrency to unlimited for the agent's lifetime.
+            long now = System.nanoTime();
+            if (now < serverConfigRetryAfterNanos) {
+                return serverConfig;
+            }
+            try {
+                serverConfig = new ConfigClient(restClient).getServiceConfig();
+                serverConfigResolved = true;
+            } catch (Exception e) {
+                log.warn("Unable to load /config quotas; session concurrency stays unlimited: {}",
+                        e.getMessage());
+                serverConfig = null;
+                serverConfigRetryAfterNanos = now + serverConfigNegativeCacheMs * 1_000_000L;
+            }
+        }
+        return serverConfig;
     }
 
     public RecoveryPolicy getRecoveryPolicy() {
@@ -428,12 +594,18 @@ public class TaiyiAgent {
         private String deviceId;
         private Duration connectTimeout = Duration.ofSeconds(10);
         private Duration requestTimeout = Duration.ofSeconds(30);
+        private Duration streamIdleTimeout = Duration.ofSeconds(1200);
+        private Duration toolExecutionTimeout;
         private int maxSessions = 100;
+        private Integer maxSessionConcurrency;
+        private String clientType = "device";
         private int eventQueueCapacity = 1024;
         private ToolRuntime toolRuntime;
         private RestClient restClient;
         private SkillSupplier skillSupplier;
         private List<String> defaultSkillNames = List.of();
+        private RequestDefaults requestDefaults = RequestDefaults.defaults();
+        private List<Path> instructionDirectories = List.of();
         private ToolRuntime.Config toolRuntimeConfig = ToolRuntime.Config.defaults();
         private boolean toolRuntimeConfigSet;
         private boolean sseFallbackEnabled = true;
@@ -446,6 +618,7 @@ public class TaiyiAgent {
         private StreamProtocol streamProtocol = StreamProtocol.AUTO;
         private PermissionPolicy permissionPolicy = PermissionPolicy.READONLY;
         private PermissionHook permissionHook;
+        private io.taiyiflow.sdk.core.security.PermissionSettings permissionSettings;
         private Duration permissionTimeout = Duration.ofSeconds(300);
         private RecoveryPolicy recoveryPolicy = RecoveryPolicy.MANUAL;
         private Duration recoveryMinBackoff = Duration.ofSeconds(2);
@@ -498,6 +671,15 @@ public class TaiyiAgent {
             return this;
         }
 
+        /** First-frame client_type; default "device". Affects server-side built-in skill merging. */
+        public Builder clientType(String clientType) {
+            if (clientType == null || clientType.isBlank()) {
+                throw new IllegalArgumentException("clientType must not be blank");
+            }
+            this.clientType = clientType;
+            return this;
+        }
+
         public Builder connectTimeout(Duration timeout) {
             this.connectTimeout = timeout;
             return this;
@@ -505,6 +687,28 @@ public class TaiyiAgent {
 
         public Builder requestTimeout(Duration timeout) {
             this.requestTimeout = timeout;
+            return this;
+        }
+
+        /** Stream idle watchdog timeout; zero disables idle checks. Default 1200s. */
+        public Builder streamIdleTimeout(Duration timeout) {
+            if (timeout == null || timeout.isNegative()) {
+                throw new IllegalArgumentException("streamIdleTimeout must be >= 0 (0 disables idle checks)");
+            }
+            this.streamIdleTimeout = timeout;
+            return this;
+        }
+
+        /**
+         * Tool-period watchdog timeout override. Values below the registry-derived floor
+         * (max registered tool time + 60s, never below 31min) are raised to that floor.
+         * Null keeps automatic derivation.
+         */
+        public Builder toolExecutionTimeout(Duration timeout) {
+            if (timeout != null && (timeout.isZero() || timeout.isNegative())) {
+                throw new IllegalArgumentException("toolExecutionTimeout must be positive");
+            }
+            this.toolExecutionTimeout = timeout;
             return this;
         }
 
@@ -517,6 +721,22 @@ public class TaiyiAgent {
         public Builder skillSupplier(SkillSupplier supplier, List<String> defaultSkillNames) {
             this.skillSupplier = supplier;
             this.defaultSkillNames = defaultSkillNames == null ? List.of() : List.copyOf(defaultSkillNames);
+            return this;
+        }
+
+        /** Agent-level first-frame defaults; explicit per-request values always win. */
+        public Builder requestDefaults(RequestDefaults requestDefaults) {
+            this.requestDefaults = java.util.Objects.requireNonNull(requestDefaults, "requestDefaults");
+            return this;
+        }
+
+        /**
+         * Opt in to client_instructions supply from explicit directories only.
+         * No managed/user/home discovery is performed; empty (the default) disables supply.
+         */
+        public Builder instructionDirectories(List<Path> directories) {
+            this.instructionDirectories = directories == null ? List.of()
+                    : directories.stream().map(dir -> dir.toAbsolutePath().normalize()).toList();
             return this;
         }
 
@@ -535,6 +755,19 @@ public class TaiyiAgent {
 
         public Builder maxSessions(int max) {
             this.maxSessions = max;
+            return this;
+        }
+
+        /**
+         * Explicit limit for concurrently executing sessions (new chat() starts only;
+         * resume/attach/retry/repeat are exempt). Null (default) defers to the server
+         * /config quota; 0 blocks new chats.
+         */
+        public Builder maxSessionConcurrency(Integer limit) {
+            if (limit != null && limit < 0) {
+                throw new IllegalArgumentException("maxSessionConcurrency must be >= 0");
+            }
+            this.maxSessionConcurrency = limit;
             return this;
         }
 
@@ -573,6 +806,12 @@ public class TaiyiAgent {
 
         public Builder permissionHook(PermissionHook hook) {
             this.permissionHook = java.util.Objects.requireNonNull(hook, "hook");
+            return this;
+        }
+
+        /** Fine-grained permission settings (rules/categories/write-confirmation/browser mode). */
+        public Builder permissionSettings(io.taiyiflow.sdk.core.security.PermissionSettings settings) {
+            this.permissionSettings = java.util.Objects.requireNonNull(settings, "settings");
             return this;
         }
 

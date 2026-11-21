@@ -69,7 +69,9 @@ public final class ToolRuntime implements AutoCloseable {
     }
 
     public void flushClientResults(RestClient restClient) {
-        new ToolResultReporter(restClient, this).flush();
+        ToolResultReporter reporter = new ToolResultReporter(restClient, this);
+        reporter.flush();
+        reporter.reconcileDeadLetters();
     }
 
     public void reportFailure(ReportAlert alert) {

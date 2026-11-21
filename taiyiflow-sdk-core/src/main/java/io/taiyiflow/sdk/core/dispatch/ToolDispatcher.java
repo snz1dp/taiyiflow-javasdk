@@ -115,7 +115,8 @@ public class ToolDispatcher {
         // 1. Permission check, including ASK approval wait: no execution permit is held here.
         for (PermissionHook hook : permissionHooks) {
             try {
-                PermissionHook.Decision decision = await(hook.onPermission(sessionId, toolCall));
+                PermissionHook.PermissionResult permission = await(hook.evaluate(sessionId, toolCall));
+                PermissionHook.Decision decision = permission.decision();
                 if (decision == PermissionHook.Decision.ASK) {
                     ApprovalBroker.Approval approval = approvalBroker.await(toolCall, permissionTimeout);
                     decision = approval.decision();
@@ -126,10 +127,12 @@ public class ToolDispatcher {
                 }
                 if (decision == PermissionHook.Decision.DENY) {
                     log.info("Tool call denied by permission hook: {}", toolCall.getName());
-                    return ToolResult.error(toolCall.getId(), "Permission denied by hook");
+                    String reason = permission.reason() != null
+                            ? permission.reason() : "Permission denied by hook";
+                    return ToolResult.error(toolCall.getId(), reason);
                 }
             } catch (TimeoutException e) {
-                return ToolResult.error(toolCall.getId(), "Permission check timed out");
+                return ToolResult.error(toolCall.getId(), confirmationTimeoutMessage(toolCall.getName()));
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 return ToolResult.error(toolCall.getId(), "Permission check interrupted");
@@ -224,7 +227,14 @@ public class ToolDispatcher {
         }
     }
 
-    private PermissionHook.Decision await(CompletableFuture<PermissionHook.Decision> future)
+    private String confirmationTimeoutMessage(String toolName) {
+        long seconds = permissionTimeout.toSeconds();
+        String waited = seconds > 0 ? seconds + " 秒" : permissionTimeout.toMillis() + " 毫秒";
+        return "工具 " + toolName + " 的执行确认已超时（等待用户确认超过 " + waited
+                + "），用户未及时响应。请尝试其他不需要用户确认的方案，或在用户在线时重新尝试。";
+    }
+
+    private PermissionHook.PermissionResult await(CompletableFuture<PermissionHook.PermissionResult> future)
             throws InterruptedException, java.util.concurrent.ExecutionException, TimeoutException {
         if (permissionTimeout.isZero()) {
             return future.get();

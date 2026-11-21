@@ -9,6 +9,18 @@ final class StreamIdleWatchdog {
     record Arm(String runId, long recoveryGeneration, Object handleIdentity) {
     }
 
+    static final Duration MIN_TOOL_TIMEOUT = Duration.ofMinutes(31);
+    static final Duration TOOL_TIMEOUT_MARGIN = Duration.ofSeconds(60);
+
+    /** Tool-period floor: max registered tool time + 60s, never below 31min (Electron runtime-config parity). */
+    static Duration deriveToolTimeout(Duration maxRegisteredToolTime) {
+        if (maxRegisteredToolTime == null) {
+            return MIN_TOOL_TIMEOUT;
+        }
+        Duration derived = maxRegisteredToolTime.plus(TOOL_TIMEOUT_MARGIN);
+        return derived.compareTo(MIN_TOOL_TIMEOUT) < 0 ? MIN_TOOL_TIMEOUT : derived;
+    }
+
     private final ScheduledExecutorService scheduler;
     private final long idleTimeoutNanos;
     private final long toolTimeoutNanos;
@@ -18,8 +30,8 @@ final class StreamIdleWatchdog {
     private int toolExecutions;
 
     StreamIdleWatchdog(ScheduledExecutorService scheduler, Duration idleTimeout, Duration toolTimeout) {
-        if (idleTimeout.isZero() || idleTimeout.isNegative() || toolTimeout.isZero() || toolTimeout.isNegative()) {
-            throw new IllegalArgumentException("Watchdog timeouts must be positive");
+        if (idleTimeout.isNegative() || toolTimeout.isZero() || toolTimeout.isNegative()) {
+            throw new IllegalArgumentException("idleTimeout must be >= 0 (0 disables idle checks) and toolTimeout must be positive");
         }
         this.scheduler = scheduler;
         this.idleTimeoutNanos = idleTimeout.toNanos();
@@ -32,7 +44,9 @@ final class StreamIdleWatchdog {
         current = arm;
         lastActivity = System.nanoTime();
         toolExecutions = 0;
-        schedule(arm, idleTimeoutNanos, onTimeout);
+        if (idleTimeoutNanos > 0) {
+            schedule(arm, idleTimeoutNanos, onTimeout);
+        }
         return arm;
     }
 
@@ -68,11 +82,23 @@ final class StreamIdleWatchdog {
         }
     }
 
+    Duration idleTimeout() {
+        return Duration.ofNanos(idleTimeoutNanos);
+    }
+
+    Duration toolTimeout() {
+        return Duration.ofNanos(toolTimeoutNanos);
+    }
+
     private void reschedule(Arm arm, Runnable onTimeout) {
         if (check != null) {
             check.cancel(false);
+            check = null;
         }
-        schedule(arm, toolExecutions > 0 ? toolTimeoutNanos : idleTimeoutNanos, onTimeout);
+        long timeout = toolExecutions > 0 ? toolTimeoutNanos : idleTimeoutNanos;
+        if (timeout > 0) {
+            schedule(arm, timeout, onTimeout);
+        }
     }
 
     private void schedule(Arm arm, long delayNanos, Runnable onTimeout) {

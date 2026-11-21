@@ -108,7 +108,9 @@ class ToolDispatcherTest {
         ToolResult result = dispatcher.dispatch("s-1", makeCall("write_file"));
 
         assertFalse(result.isSuccess());
-        assertEquals("Permission check timed out", result.getError());
+        assertTrue(result.getError().contains("工具 write_file 的执行确认已超时"));
+        assertTrue(result.getError().contains("20 毫秒"));
+        assertTrue(result.getError().contains("请尝试其他不需要用户确认的方案"));
         assertEquals(0, executions.get());
     }
 
@@ -222,8 +224,23 @@ class ToolDispatcherTest {
         ToolResult result = dispatcher.dispatch("s-1", makeCall("tool"));
 
         assertFalse(result.isSuccess());
-        assertEquals("Permission check timed out", result.getError());
+        assertTrue(result.getError().contains("工具 tool 的执行确认已超时"));
         assertEquals(0, executions.get());
+    }
+
+    @Test
+    void confirmationTimeoutMessageReportsWaitedSeconds() {
+        PluginManager pm = new PluginManager();
+        PermissionHook askHook = (sessionId, toolCall) ->
+                CompletableFuture.completedFuture(PermissionHook.Decision.ASK);
+        ToolDispatcher dispatcher = new ToolDispatcher(
+                pm, List.of(), List.of(askHook), Duration.ofSeconds(1));
+
+        ToolResult result = dispatcher.dispatch("s-1", makeCall("write_file"));
+
+        assertFalse(result.isSuccess());
+        assertEquals("工具 write_file 的执行确认已超时（等待用户确认超过 1 秒），用户未及时响应。"
+                + "请尝试其他不需要用户确认的方案，或在用户在线时重新尝试。", result.getError());
     }
 
     @Test

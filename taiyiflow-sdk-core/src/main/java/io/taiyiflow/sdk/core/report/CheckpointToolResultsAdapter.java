@@ -97,6 +97,17 @@ public final class CheckpointToolResultsAdapter {
     /** Reconcile a record found after process restart; no tool dispatcher is involved. */
     public Prepared reconcile(ReportOutbox.Entry entry, ResumableCheckpoint checkpoint,
                               String flowId, String sessionId) throws IOException {
+        return reconcile(entry, checkpoint, flowId, sessionId, null);
+    }
+
+    /**
+     * Reconcile with an optional platform-authoritative tool call record query on top of the local
+     * checkpoint comparison. Calls no longer waiting are only accepted when the platform proves the
+     * result was received (or pause-frozen); unknown states stay dead-letter and are never replayed.
+     */
+    public Prepared reconcile(ReportOutbox.Entry entry, ResumableCheckpoint checkpoint,
+                              String flowId, String sessionId,
+                              io.taiyiflow.sdk.transport.rest.ToolCallRecordClient records) throws IOException {
         if (!flowId.equals(entry.getFlowId()) || !sessionId.equals(entry.getSessionId())
                 || !java.util.Objects.equals(entry.getRunId(), checkpoint.getRunId())
                 || !entry.getCheckpointId().equals(checkpoint.getId())) {
@@ -119,13 +130,39 @@ public final class CheckpointToolResultsAdapter {
             return conflict(entry, "checkpoint-archive-requires-reconciliation");
         }
         Set<String> outstanding = outstanding(checkpoint);
+        Set<String> notWaiting = new LinkedHashSet<>();
         for (JsonNode result : entry.getPayload()) {
             String callId = result.path("call_id").asText();
             if (!outstanding.contains(callId)) {
-                return conflict(entry, "call-not-waiting-or-uncertain");
+                notWaiting.add(callId);
             }
         }
-        return new Prepared(entry, (ArrayNode) entry.getPayload(), true);
+        if (!notWaiting.isEmpty()) {
+            if (records == null) {
+                return conflict(entry, "call-not-waiting-or-uncertain");
+            }
+            PlatformResultReconciler.Verdict verdict = new PlatformResultReconciler(records)
+                    .classifyCheckpointCalls(entry.getPayload(), flowId, sessionId, entry.getRunId(), notWaiting);
+            if (verdict == PlatformResultReconciler.Verdict.UNKNOWN) {
+                return conflict(entry, "call-not-waiting-or-uncertain");
+            }
+            if (outstanding.isEmpty()) {
+                // Every submitted result is already terminal on the platform; nothing left to resume.
+                outbox.delete(entry.getId());
+                return new Prepared(null, MAPPER.createArrayNode(), true);
+            }
+            // Remaining outstanding calls still need the submission; identical replays are idempotent.
+        }
+        // Replay only the still-outstanding calls. Calls the platform already received or pause-froze
+        // (the notWaiting set) must not be re-sent: re-submitting a pause-frozen result would violate
+        // the discard-paused semantics. When nothing dropped out this is the full payload unchanged.
+        ArrayNode replay = MAPPER.createArrayNode();
+        for (JsonNode result : entry.getPayload()) {
+            if (outstanding.contains(result.path("call_id").asText())) {
+                replay.add(result);
+            }
+        }
+        return new Prepared(entry, replay, true);
     }
 
     /** A valid stream event proves that the backend processed the resume first frame. */

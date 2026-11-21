@@ -108,7 +108,34 @@ class TaiyiAgentBuilderTest {
                 .baseUrl("http://x").apiKey("k").flowId("f").build();
 
         assertEquals(PermissionPolicy.READONLY, agent.getPermissionPolicy());
+        assertEquals(PermissionPolicy.READONLY, agent.getPermissionGate().getSettings().getPolicy());
         agent.shutdown();
+    }
+
+    @Test
+    void permissionGateReflectsPolicyAndExplicitSettings() {
+        TaiyiAgent auto = TaiyiAgent.builder()
+                .baseUrl("http://x").apiKey("k").flowId("f")
+                .permissionPolicy(PermissionPolicy.AUTO)
+                .build();
+        assertEquals(PermissionPolicy.AUTO, auto.getPermissionGate().getSettings().getPolicy());
+        auto.shutdown();
+
+        var settings = io.taiyiflow.sdk.core.security.PermissionSettings.builder()
+                .policy(PermissionPolicy.CONFIRM)
+                .addRule(io.taiyiflow.sdk.core.security.PermissionRule.of("deny", null, "rm"))
+                .writeConfirmation(io.taiyiflow.sdk.core.security.WriteConfirmation.DIRECT)
+                .build();
+        TaiyiAgent configured = TaiyiAgent.builder()
+                .baseUrl("http://x").apiKey("k").flowId("f")
+                .permissionPolicy(PermissionPolicy.AUTO)
+                .permissionSettings(settings)
+                .build();
+        assertEquals(PermissionPolicy.CONFIRM, configured.getPermissionGate().getSettings().getPolicy());
+        assertEquals(1, configured.getPermissionGate().getSettings().getRules().size());
+        assertEquals(io.taiyiflow.sdk.core.security.WriteConfirmation.DIRECT,
+                configured.getPermissionGate().getSettings().getWriteConfirmation());
+        configured.shutdown();
     }
 
     @Test

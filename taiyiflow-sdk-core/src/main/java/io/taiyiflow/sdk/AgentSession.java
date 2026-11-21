@@ -76,7 +76,8 @@ public interface AgentSession {
     AgentSession resume();
 
     /**
-     * Resume a specific server-side checkpoint.
+     * Resume a specific server-side checkpoint. Also works on a fresh session, adopting the
+     * checkpoint's run identity (restart recovery driven by platform resume notifications).
      */
     AgentSession resume(io.taiyiflow.sdk.transport.envelope.ResumableCheckpoint checkpoint);
 

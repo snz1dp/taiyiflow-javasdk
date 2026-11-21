@@ -18,6 +18,7 @@ public final class ToolResultReporter {
     private static final ObjectMapper mapper = new ObjectMapper();
 
     private final ClientToolResultAdapter adapter;
+    private final RestClient restClient;
 
     /** Legacy standalone reporter with an explicitly nonpersistent process-local outbox. */
     public ToolResultReporter(RestClient restClient) {
@@ -48,6 +49,7 @@ public final class ToolResultReporter {
         if (initialRetryDelay == null || initialRetryDelay.isNegative()) {
             throw new IllegalArgumentException("initialRetryDelay must be non-negative");
         }
+        this.restClient = restClient;
         this.adapter = new ClientToolResultAdapter(restClient, outbox, alertHandler,
                 maxRetries, initialRetryDelay);
     }
@@ -79,6 +81,11 @@ public final class ToolResultReporter {
 
     public void flushNow() {
         adapter.flushNow();
+    }
+
+    /** Restart reconciliation of dead-letter results against platform tool call records. */
+    public int reconcileDeadLetters() {
+        return adapter.reconcileDeadLetters(new ToolCallRecordClient(restClient));
     }
 
     public static ObjectNode buildPayload(ToolCall call, ToolResult result) {

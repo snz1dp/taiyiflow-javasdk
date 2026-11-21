@@ -29,6 +29,7 @@ public class RunContext {
     private SubtaskCapabilitySnapshot capabilities = SubtaskCapabilitySnapshot.empty();
     private List<JsonNode> availableTools;
     private SkillSupplySnapshot skillSupply = SkillSupplySnapshot.empty();
+    private ChatRequest optionsSnapshot;
     private long recoveryGeneration;
     private boolean persisted;
 
@@ -46,6 +47,8 @@ public class RunContext {
         availableTools = request.getAvailableTools() == null ? null : request.getAvailableTools().stream()
                 .<JsonNode>map(JsonNode::deepCopy).toList();
         skillSupply = new SkillSupplySnapshot(request.getClientSkillPackages(), request.getRequestedSkillNames(), List.of());
+        optionsSnapshot = new ChatRequest();
+        optionsSnapshot.copyOptionsFrom(request);
         persisted = false;
     }
 
@@ -166,6 +169,14 @@ public class RunContext {
 
     public synchronized SkillSupplySnapshot getSkillSupply() {
         return skillSupply;
+    }
+
+    public synchronized ChatRequest getOptionsSnapshot() {
+        ChatRequest copy = new ChatRequest();
+        if (optionsSnapshot != null) {
+            copy.copyOptionsFrom(optionsSnapshot);
+        }
+        return copy;
     }
 
     public synchronized long getRecoveryGeneration() {

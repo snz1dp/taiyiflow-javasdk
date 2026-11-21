@@ -69,6 +69,28 @@ class PluginManagerTest {
     }
 
     @Test
+    void notifiesRegisteredSessionFinishWithoutInterruptingOtherHooks() {
+        PluginManager pm = new PluginManager();
+        AtomicInteger finished = new AtomicInteger();
+        pm.registerSessionHook(new SessionHook() {
+            @Override
+            public void onFinish(String sessionId) {
+                throw new IllegalStateException("ignored");
+            }
+        });
+        pm.registerSessionHook(new SessionHook() {
+            @Override
+            public void onFinish(String sessionId) {
+                if ("session-1".equals(sessionId)) finished.incrementAndGet();
+            }
+        });
+
+        pm.notifySessionFinish("session-1");
+
+        assertEquals(1, finished.get());
+    }
+
+    @Test
     void handlerExceptionReturnsErrorResult() {
         PluginManager pm = new PluginManager();
         pm.register("failing", call -> {
@@ -80,5 +102,27 @@ class PluginManagerTest {
 
         assertFalse(result.isSuccess());
         assertEquals("boom", result.getError());
+    }
+
+    @Test
+    void tracksMaxRegisteredToolExecutionTime() {
+        PluginManager pm = new PluginManager();
+        assertNull(pm.maxToolExecutionTime());
+
+        pm.register("fast", call -> ToolResult.success(call.getId(), null));
+        assertNull(pm.maxToolExecutionTime());
+
+        pm.register("media", call -> ToolResult.success(call.getId(), null), java.time.Duration.ofMinutes(59));
+        pm.register("subtask", call -> ToolResult.success(call.getId(), null), java.time.Duration.ofHours(1));
+        assertEquals(java.time.Duration.ofHours(1), pm.maxToolExecutionTime());
+
+        pm.unregister("subtask");
+        assertEquals(java.time.Duration.ofMinutes(59), pm.maxToolExecutionTime());
+
+        pm.register("media", call -> ToolResult.success(call.getId(), null));
+        assertNull(pm.maxToolExecutionTime());
+
+        assertThrows(IllegalArgumentException.class,
+                () -> pm.register("bad", call -> ToolResult.success(call.getId(), null), java.time.Duration.ZERO));
     }
 }

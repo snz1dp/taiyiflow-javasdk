@@ -8,6 +8,7 @@ import org.slf4j.LoggerFactory;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
@@ -25,6 +26,8 @@ public class SessionManager {
     private final int maxSessions;
     private final Map<String, AgentSessionImpl> sessions = new ConcurrentHashMap<>();
     private final Map<String, AgentSessionImpl> openSessions = new ConcurrentHashMap<>();
+    private final Set<AgentSessionImpl> startingReservations = ConcurrentHashMap.newKeySet();
+    private final ResumeLeaseRegistry resumeLeases = new ResumeLeaseRegistry();
 
     public SessionManager(ExecutorService executor, int maxSessions) {
         this.executor = executor;
@@ -114,6 +117,45 @@ public class SessionManager {
         }
     }
 
+    /**
+     * Electron-style new-chat concurrency guard: counts sessions with a live local
+     * execution (the starting session excluded). Resume/attach/retry/repeat never
+     * pass through here. Limit -1 means unlimited (/config unavailable).
+     * Counts openSessions so PAUSED runs (detached from the active registry) still occupy
+     * a slot, and reserves the starting session atomically so two concurrent chat() calls
+     * cannot both pass the check before either reaches CONNECTING.
+     */
+    synchronized void checkExecutionConcurrency(TaiyiAgent agent, AgentSessionImpl starting) {
+        long executing = openSessions.values().stream()
+                .filter(s -> s != starting && (isExecuting(s.getState()) || startingReservations.contains(s)))
+                .count();
+        // Non-blocking occupancy warning: sessions of one agent share the workspace root for
+        // built-in tools, so parallel execution may overwrite each other's files.
+        if (executing > 0 && agent.getWorkspace() != null) {
+            log.warn("Workspace {} is concurrently used by {} other executing session(s); "
+                    + "parallel execution may overwrite files", agent.getWorkspace(), executing);
+        }
+        int limit = agent.getMaxSessionConcurrency();
+        if (limit >= 0 && executing >= limit) {
+            throw new IllegalStateException("Maximum concurrent executing sessions reached: " + limit);
+        }
+        startingReservations.add(starting);
+    }
+
+    void releaseStartingReservation(AgentSessionImpl session) {
+        startingReservations.remove(session);
+    }
+
+    private static boolean isExecuting(SessionState state) {
+        return state == SessionState.CONNECTING
+                || state == SessionState.STREAMING
+                || state == SessionState.TOOL_CALLING
+                || state == SessionState.PAUSING
+                || state == SessionState.PAUSED
+                || state == SessionState.RESUMING
+                || state == SessionState.RESTARTING;
+    }
+
     public void shutdownAll() {
         log.info("Shutting down all sessions: {}", openSessions.size());
         List<AgentSessionImpl> open = List.copyOf(openSessions.values());
@@ -143,5 +185,9 @@ public class SessionManager {
 
     ExecutorService getExecutor() {
         return executor;
+    }
+
+    ResumeLeaseRegistry getResumeLeases() {
+        return resumeLeases;
     }
 }

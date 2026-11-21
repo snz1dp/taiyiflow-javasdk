@@ -119,10 +119,18 @@ public final class SkillSupplier {
         }
         String category = skill.metadata() == null ? skill.category()
                 : skill.metadata().path("tool_category").asText(skill.category());
-        if (query.availableTools() != null && category != null
-                && (category.equalsIgnoreCase("browser") || category.equalsIgnoreCase("chrome"))
-                && query.availableTools().stream().noneMatch(tool -> tool.startsWith("taiyiflow-in-chrome__"))) {
-            return false;
+        if (query.availableTools() != null && category != null) {
+            if ((category.equalsIgnoreCase("browser") || category.equalsIgnoreCase("chrome"))
+                    && query.availableTools().stream().noneMatch(tool -> tool.startsWith("taiyiflow-in-chrome__"))) {
+                return false;
+            }
+            // Electron filterWhiteboardSkillsByOpenState: whiteboard skills are only supplied
+            // while the whiteboard is open. A closed whiteboard injects only the whiteboard_open
+            // entry tool, so skills require at least one non-entry whiteboard tool.
+            if (category.equalsIgnoreCase("whiteboard") && query.availableTools().stream()
+                    .noneMatch(tool -> tool.startsWith("whiteboard_") && !tool.equals("whiteboard_open"))) {
+                return false;
+            }
         }
         return true;
     }

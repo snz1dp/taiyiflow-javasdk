@@ -37,4 +37,16 @@ public enum PermissionPolicy implements PermissionHook {
         }
         return MUTATING_TOOLS.contains(toolName);
     }
+
+    /** Parses a configuration value (auto/confirm/readonly); unknown keys return null. */
+    public static PermissionPolicy fromKey(String key) {
+        if (key == null) {
+            return null;
+        }
+        try {
+            return valueOf(key.toUpperCase(java.util.Locale.ROOT).trim());
+        } catch (IllegalArgumentException exception) {
+            return null;
+        }
+    }
 }

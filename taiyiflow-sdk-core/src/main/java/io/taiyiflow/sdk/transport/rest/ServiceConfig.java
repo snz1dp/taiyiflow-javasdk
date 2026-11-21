@@ -43,6 +43,40 @@ public final class ServiceConfig {
         return value > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) value;
     }
 
+    /** Server subtask parallelism quota: null when absent/invalid/negative, else min(raw, 32); 0 disables run_subtask. */
+    public Integer maxParallelismSubtask() {
+        JsonNode value = raw.get("max_parallelism_subtask");
+        if (value == null || !value.canConvertToInt() || value.asInt() < 0) {
+            return null;
+        }
+        return Math.min(value.asInt(), 32);
+    }
+
+    /** Server session concurrency quota; default 3, explicit null falls back, 0 is preserved (blocks new chats). */
+    public int clientMaxSessionConcurrency() {
+        JsonNode value = raw.get("client_max_session_concurrency");
+        if (value == null || value.isNull() || !value.canConvertToInt()) {
+            return 3;
+        }
+        return value.asInt();
+    }
+
+    public Integer agentAutoLoopMaxRounds() {
+        JsonNode value = raw.get("agent_auto_loop_max_rounds");
+        return value != null && value.canConvertToInt() && value.asInt() >= 0 ? value.asInt() : null;
+    }
+
+    /** Server-authoritative input token budget; the SDK only exposes it, enforcement stays on the platform. */
+    public Integer maxInputTokens() {
+        JsonNode value = raw.get("max_input_tokens");
+        return value != null && value.canConvertToInt() && value.asInt() > 0 ? value.asInt() : null;
+    }
+
+    public boolean ontologyEnabled() {
+        JsonNode value = raw.get("ontology");
+        return value != null && value.isBoolean() && value.booleanValue();
+    }
+
     public JsonNode raw() { return raw.deepCopy(); }
 
     private String requiredText(String name) {

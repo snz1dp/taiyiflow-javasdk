@@ -58,6 +58,19 @@ public class RestClient {
         return sendJson(path, "GET", HttpRequest.BodyPublishers.noBody(), null);
     }
 
+    /** GET without Authorization/credential headers, for unauthenticated probe endpoints. */
+    public JsonNode getUnauthenticated(String path) throws Exception {
+        HttpResponse<String> response = send(path, "GET", HttpRequest.BodyPublishers.noBody(), null,
+                HttpResponse.BodyHandlers.ofString(), requestTimeout, false);
+        if (response.statusCode() < 200 || response.statusCode() >= 300) {
+            throw new RestException(response.statusCode(), response.body());
+        }
+        if (response.body() == null || response.body().isBlank()) {
+            return mapper.createObjectNode();
+        }
+        return mapper.readTree(response.body());
+    }
+
     public byte[] getBytes(String path) throws Exception {
         return sendBytes(path);
     }
@@ -192,18 +205,26 @@ public class RestClient {
 
     private <T> HttpResponse<T> send(String path, String method, HttpRequest.BodyPublisher body, String contentType,
                                      HttpResponse.BodyHandler<T> bodyHandler, Duration timeout) throws Exception {
+        return send(path, method, body, contentType, bodyHandler, timeout, true);
+    }
+
+    private <T> HttpResponse<T> send(String path, String method, HttpRequest.BodyPublisher body, String contentType,
+                                     HttpResponse.BodyHandler<T> bodyHandler, Duration timeout,
+                                     boolean authenticate) throws Exception {
         HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
                 .uri(URI.create(baseUrl + path))
                 .timeout(timeout == null ? requestTimeout : timeout)
                 .header("Accept", "application/json");
-        String token = accessToken.get();
-        if (token != null && !token.isBlank()) {
-            requestBuilder.header("Authorization", "Bearer " + token);
+        if (authenticate) {
+            String token = accessToken.get();
+            if (token != null && !token.isBlank()) {
+                requestBuilder.header("Authorization", "Bearer " + token);
+            }
+            credentialHeaders.forEach(requestBuilder::header);
         }
         if (contentType != null) {
             requestBuilder.header("Content-Type", contentType);
         }
-        credentialHeaders.forEach(requestBuilder::header);
         return httpClient.send(requestBuilder.method(method, body).build(), bodyHandler);
     }
 
