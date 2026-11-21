@@ -12,8 +12,10 @@ import java.net.http.HttpClient;
 import java.net.http.WebSocket;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ConcurrentHashMap;
@@ -43,7 +45,7 @@ public class CollaborationPlugin {
     private static final long MAX_RECONNECT_DELAY_MS = 60_000;
     private static final long INBOUND_SILENCE_TIMEOUT_MS = 90_000;
     private static final String WORKER_CAPABILITIES =
-            "notification.v1,task.remote_task.v1,task.dialogue_subtask.v1";
+            "notification.v1,task.remote_task.v1,task.dialogue_subtask.v1,agent_loop.resume.v1";
 
     private final String baseUrl;
     private final Supplier<String> accessToken;
@@ -62,6 +64,9 @@ public class CollaborationPlugin {
     private final Map<String, Long> dispatchedTaskVersions = new ConcurrentHashMap<>();
 
     private volatile WebSocket webSocket;
+    // JDK WebSocket forbids overlapping sendText calls; serialize all outbound frames so a
+    // taskExecutor report and a listener-thread pong can't race into IllegalStateException.
+    private final Object sendLock = new Object();
     private volatile Consumer<TaskDispatch> taskHandler;
     private volatile Predicate<TaskDispatch> taskDispatchHandler;
     private volatile Consumer<TaskCancel> taskCancelHandler;
@@ -69,6 +74,25 @@ public class CollaborationPlugin {
     private volatile Consumer<ReleasePush> releaseHandler;
     private volatile Consumer<JsonNode> connectionReadyHandler;
     private volatile Consumer<String> kickedHandler;
+    private volatile Consumer<JsonNode> notificationHandler;
+    private final Set<String> seenNotificationDeliveries = Collections.newSetFromMap(
+            Collections.synchronizedMap(new LinkedHashMap<>(128, 0.75f, false) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, Boolean> eldest) {
+                    return size() > 1000;
+                }
+            }));
+    private volatile Consumer<ResumeRequest> resumeRequestedHandler;
+    private volatile Consumer<JsonNode> checkpointStateHandler;
+    private volatile Consumer<JsonNode> originAvailableHandler;
+    private final Set<String> seenResumeNotifications = Collections.newSetFromMap(
+            Collections.synchronizedMap(new LinkedHashMap<>(128, 0.75f, false) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, Boolean> eldest) {
+                    return size() > 1000;
+                }
+            }));
+    private final Map<String, Integer> checkpointVersions = new ConcurrentHashMap<>();
     private volatile String sessionId = "";
     private volatile long lastInboundNanos = System.nanoTime();
     private volatile long expectedHeartbeatNanos;
@@ -163,6 +187,37 @@ public class CollaborationPlugin {
         return this;
     }
 
+    /**
+     * Set handler for notification.v1 deliveries. Each delivery is acknowledged automatically;
+     * the handler sees the full platform delivery payload once per delivery_id.
+     */
+    public CollaborationPlugin onNotification(Consumer<JsonNode> handler) {
+        this.notificationHandler = handler;
+        return this;
+    }
+
+    /**
+     * Set handler for agent_loop.resume.v1 resume requests. The handler owns the actual resume
+     * and must acknowledge via {@link #sendResumeNotificationAck} once the resume stream is ready;
+     * without a handler the plugin answers ignored_unsupported.
+     */
+    public CollaborationPlugin onResumeRequested(Consumer<ResumeRequest> handler) {
+        this.resumeRequestedHandler = handler;
+        return this;
+    }
+
+    /** Optional observer for agent_loop.checkpoint_state pushes (cross-instance takeover timing). */
+    public CollaborationPlugin onCheckpointState(Consumer<JsonNode> handler) {
+        this.checkpointStateHandler = handler;
+        return this;
+    }
+
+    /** Optional observer for agent_loop.origin_available pushes (cross-instance takeover timing). */
+    public CollaborationPlugin onOriginAvailable(Consumer<JsonNode> handler) {
+        this.originAvailableHandler = handler;
+        return this;
+    }
+
     public CollaborationPlugin activityTimeouts(Duration heartbeatInterval, Duration inboundSilenceTimeout) {
         if (heartbeatInterval == null || inboundSilenceTimeout == null
                 || heartbeatInterval.isZero() || heartbeatInterval.isNegative()
@@ -217,6 +272,47 @@ public class CollaborationPlugin {
         if (connected.get()) {
             sendEnvelope("session.update", mapper.createObjectNode().put("session_id", this.sessionId));
         }
+    }
+
+    /** Request recent notifications over WS; the platform replies notification.recent and re-delivers. */
+    public void fetchRecentNotifications(int limit, String cursor) {
+        if (limit < 1 || limit > 100) {
+            throw new IllegalArgumentException("limit must be within 1..100");
+        }
+        ObjectNode payload = mapper.createObjectNode().put("limit", limit);
+        if (cursor != null && !cursor.isBlank()) {
+            payload.put("cursor", cursor);
+        }
+        sendEnvelope("notification.fetch_recent", payload);
+    }
+
+    /** Mark one delivery read on the platform (notification.read requires delivery_id). */
+    public void markNotificationRead(String deliveryId) {
+        if (deliveryId == null || deliveryId.isBlank()) {
+            throw new IllegalArgumentException("deliveryId is required");
+        }
+        sendEnvelope("notification.read", mapper.createObjectNode().put("delivery_id", deliveryId));
+    }
+
+    /**
+     * Acknowledge a resume notification. Backend-required fields are notification_id,
+     * checkpoint_id and checkpoint_version; result mirrors Electron semantics
+     * (accepted / already_running / ignored_stale / ignored_expired / ignored_unsupported).
+     */
+    public void sendResumeNotificationAck(String notificationId, String checkpointId,
+                                          int checkpointVersion, String result) {
+        if (notificationId == null || notificationId.isBlank()
+                || checkpointId == null || checkpointId.isBlank()) {
+            throw new IllegalArgumentException("notificationId and checkpointId are required");
+        }
+        ObjectNode payload = mapper.createObjectNode()
+                .put("notification_id", notificationId)
+                .put("checkpoint_id", checkpointId)
+                .put("checkpoint_version", checkpointVersion);
+        if (result != null && !result.isBlank()) {
+            payload.put("result", result);
+        }
+        sendEnvelope("agent_loop.resume_notification_ack", payload);
     }
 
     private void connect() {
@@ -408,7 +504,10 @@ public class CollaborationPlugin {
             return;
         }
         try {
-            current.sendText(mapper.writeValueAsString(envelope), true);
+            String text = mapper.writeValueAsString(envelope);
+            synchronized (sendLock) {
+                current.sendText(text, true).join();
+            }
         } catch (Exception e) {
             log.error("Failed to send collaboration message", e);
         }
@@ -527,6 +626,20 @@ public class CollaborationPlugin {
                     }
                 }
                 case "release.push" -> handleReleasePush(payload);
+                case "notification.deliver" -> handleNotificationDeliver(payload);
+                case "notification.recent" -> handleNotificationRecent(payload);
+                case "agent_loop.resume_requested" -> handleResumeRequested(payload);
+                case "agent_loop.checkpoint_state" -> handleCheckpointState(payload);
+                case "agent_loop.origin_available" -> {
+                    Consumer<JsonNode> handler = originAvailableHandler;
+                    if (handler != null) {
+                        handler.accept(payload);
+                    }
+                }
+                // CLI-tunnel event family (primary_cli agent loop persistence/broadcast) is
+                // intentionally not implemented by Java workers; see docs/collaboration.md.
+                case "agent_loop.persistence_activate", "agent_loop.persistence_active", "agent_loop.event" ->
+                        log.debug("Ignoring CLI-tunnel agent_loop event: {}", event);
                 case "connection.ping" -> sendEnvelope("connection.pong", mapper.createObjectNode());
                 case "connection.pong" -> log.trace("Received pong");
                 default -> log.debug("Unhandled collaboration event: {}", event);
@@ -550,8 +663,17 @@ public class CollaborationPlugin {
         if (ROLE_COLLABORATION_WORKER.equals(role)) {
             fetchRecentTasks();
         }
-        if (connectionReadyHandler != null) {
-            connectionReadyHandler.accept(payload);
+        Consumer<JsonNode> handler = connectionReadyHandler;
+        if (handler != null) {
+            // The ready handler may flush reports and run recovery REST rounds; keep that blocking
+            // work off the WS listener thread so inbound frames keep flowing.
+            taskExecutor.submit(() -> {
+                try {
+                    handler.accept(payload);
+                } catch (RuntimeException exception) {
+                    log.error("Connection ready handler failed", exception);
+                }
+            });
         }
     }
 
@@ -728,6 +850,111 @@ public class CollaborationPlugin {
         handler.accept(release);
     }
 
+    private void handleNotificationDeliver(JsonNode payload) {
+        String deliveryId = text(payload, "delivery_id");
+        if (deliveryId.isBlank()) {
+            log.warn("Ignoring notification delivery without delivery_id");
+            return;
+        }
+        dispatchNotification(payload, deliveryId);
+        // Ack every delivery: the platform keeps re-delivering until acknowledged, and ack is idempotent.
+        sendEnvelope("notification.ack", mapper.createObjectNode().put("delivery_id", deliveryId));
+    }
+
+    private void handleNotificationRecent(JsonNode payload) {
+        for (JsonNode item : payload.path("notifications")) {
+            String deliveryId = text(item, "delivery_id");
+            if (deliveryId.isBlank()) {
+                continue;
+            }
+            dispatchNotification(item, deliveryId);
+            if (!item.path("delivery").hasNonNull("ack_at")) {
+                sendEnvelope("notification.ack", mapper.createObjectNode().put("delivery_id", deliveryId));
+            }
+        }
+    }
+
+    private void dispatchNotification(JsonNode payload, String deliveryId) {
+        Consumer<JsonNode> handler = notificationHandler;
+        if (handler == null || !seenNotificationDeliveries.add(deliveryId)) {
+            return;
+        }
+        try {
+            handler.accept(payload);
+        } catch (RuntimeException exception) {
+            log.error("Notification handler failed for delivery {}", deliveryId, exception);
+        }
+    }
+
+    private void handleResumeRequested(JsonNode payload) {
+        String notificationId = text(payload, "notification_id");
+        String checkpointId = text(payload, "checkpoint_id");
+        JsonNode versionNode = payload.path("checkpoint_version");
+        int checkpointVersion = versionNode.isIntegralNumber() ? versionNode.asInt() : 0;
+        if (notificationId.isBlank() || checkpointId.isBlank() || checkpointVersion <= 0) {
+            log.warn("Ignoring resume request with missing required fields for checkpoint {}", checkpointId);
+            return;
+        }
+        if (!seenResumeNotifications.add(notificationId)) {
+            return;
+        }
+        String expiresAt = text(payload, "expires_at");
+        if (!expiresAt.isBlank() && isExpired(expiresAt)) {
+            sendResumeNotificationAck(notificationId, checkpointId, checkpointVersion, "ignored_expired");
+            return;
+        }
+        Integer knownVersion = checkpointVersions.get(checkpointId);
+        if (knownVersion != null && checkpointVersion < knownVersion) {
+            sendResumeNotificationAck(notificationId, checkpointId, checkpointVersion, "ignored_stale");
+            return;
+        }
+        checkpointVersions.put(checkpointId, checkpointVersion);
+        Consumer<ResumeRequest> handler = resumeRequestedHandler;
+        if (handler == null) {
+            sendResumeNotificationAck(notificationId, checkpointId, checkpointVersion, "ignored_unsupported");
+            return;
+        }
+        ResumeRequest request = new ResumeRequest();
+        request.notificationId = notificationId;
+        request.checkpointId = checkpointId;
+        request.checkpointVersion = checkpointVersion;
+        request.sessionId = text(payload, "session_id");
+        request.runId = text(payload, "run_id");
+        request.flowId = text(payload, "flow_id");
+        request.resumeStage = text(payload, "resume_stage");
+        request.reason = text(payload, "reason");
+        request.expiresAt = expiresAt.isBlank() ? null : expiresAt;
+        request.payload = payload;
+        try {
+            handler.accept(request);
+        } catch (RuntimeException exception) {
+            // Release the dedup claim so the platform's redelivery is not swallowed: the resume
+            // was never handed off, and no ack was sent. Downstream lease/per-key gates keep retries safe.
+            seenResumeNotifications.remove(notificationId);
+            log.error("Resume request handler failed for checkpoint {}", checkpointId, exception);
+        }
+    }
+
+    private void handleCheckpointState(JsonNode payload) {
+        String checkpointId = text(payload, "checkpoint_id");
+        JsonNode versionNode = payload.path("checkpoint_version");
+        if (!checkpointId.isBlank() && versionNode.isIntegralNumber() && versionNode.asInt() > 0) {
+            checkpointVersions.merge(checkpointId, versionNode.asInt(), Math::max);
+        }
+        Consumer<JsonNode> handler = checkpointStateHandler;
+        if (handler != null) {
+            handler.accept(payload);
+        }
+    }
+
+    private static boolean isExpired(String expiresAt) {
+        try {
+            return !java.time.OffsetDateTime.parse(expiresAt).toInstant().isAfter(java.time.Instant.now());
+        } catch (java.time.format.DateTimeParseException exception) {
+            return false;
+        }
+    }
+
     private static void putVersion(ObjectNode payload, Long expectedVersion) {
         if (expectedVersion != null) {
             payload.put("expected_version", expectedVersion);
@@ -794,6 +1021,20 @@ public class CollaborationPlugin {
      */
     public static class ReleasePush {
         public String version;
+        public JsonNode payload;
+    }
+
+    /** agent_loop.resume_requested payload; notification_id/checkpoint_id/checkpoint_version are required. */
+    public static class ResumeRequest {
+        public String notificationId;
+        public String checkpointId;
+        public int checkpointVersion;
+        public String sessionId;
+        public String runId;
+        public String flowId;
+        public String resumeStage;
+        public String reason;
+        public String expiresAt;
         public JsonNode payload;
     }
 }
