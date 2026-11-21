@@ -11,6 +11,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 public final class DigitalWorkerMain {
     private static final Logger log = LoggerFactory.getLogger(DigitalWorkerMain.class);
+    private static final com.fasterxml.jackson.databind.ObjectMapper JSON =
+            new com.fasterxml.jackson.databind.ObjectMapper();
 
     private DigitalWorkerMain() {
     }
@@ -58,8 +60,13 @@ public final class DigitalWorkerMain {
                 .connectTimeout(execution.connectTimeout())
                 .drainTimeout(execution.drainTimeout())
                 .requestTimeout(execution.requestTimeout())
+                .streamIdleTimeout(execution.streamIdleTimeout())
+                .toolExecutionTimeout(execution.toolExecutionTimeout())
+                .maxSessionConcurrency(execution.maxSessionConcurrency())
                 .recoveryPolicy(config.recoveryPolicy())
                 .permissionPolicy(config.permissionPolicy())
+                .permissionSettings(config.permission().toSettings(
+                        config.permissionPolicy(), config.tools().browser().permissionMode()))
                 .approvalChannel(config.approval().channel())
                 .identityValidator(instantiateRequired(
                         extensions.identityValidator(), WorkerIdentityValidator.class, "extensions.identity-validator"));
@@ -85,13 +92,48 @@ public final class DigitalWorkerMain {
             builder.onWorker(instantiate(hook, WorkerHook.class));
         }
         configureTools(builder, config, auth, secrets);
+        configureRequestDefaults(builder, config.request());
         return builder.build();
+    }
+
+    private static void configureRequestDefaults(DigitalWorker.Builder builder, WorkerConfig.Request request) {
+        io.taiyiflow.sdk.RequestDefaults.Builder defaults = io.taiyiflow.sdk.RequestDefaults.builder()
+                .inputType(request.inputType())
+                .outputType(request.outputType())
+                .autoLoopEnabled(request.autoLoopEnabled())
+                .imageGeneration(io.taiyiflow.sdk.RequestDefaults.ImageGeneration.valueOf(
+                        request.imageGeneration().toUpperCase(java.util.Locale.ROOT)))
+                .relationSessions(request.relationSessions());
+        if (request.requestType() != null) defaults.requestType(request.requestType());
+        if (request.model() != null) defaults.model(request.model());
+        if (request.reasoning() != null) defaults.reasoning(request.reasoning());
+        if (request.internetSearch() != null) defaults.internetSearch(request.internetSearch());
+        if (!request.knowledgeScopes().isEmpty()) defaults.knowledgeScopes(JSON.valueToTree(request.knowledgeScopes()));
+        if (!request.knowledgeDocs().isEmpty()) defaults.knowledgeDocs(JSON.valueToTree(request.knowledgeDocs()));
+        if (request.autoLoopMaxRounds() != null) defaults.autoLoopMaxRounds(request.autoLoopMaxRounds());
+        if (request.groupId() != null) defaults.groupId(request.groupId());
+        if (request.agentAppId() != null) defaults.agentAppId(request.agentAppId());
+        if (request.agentAppOwnerId() != null) defaults.agentAppOwnerId(request.agentAppOwnerId());
+        if (request.clientContextDir() != null) defaults.clientContextDir(request.clientContextDir());
+        if (request.longTermMemoryEnabled() != null) defaults.longTermMemoryEnabled(request.longTermMemoryEnabled());
+        if (request.crossSessionMemoryEnabled() != null) {
+            defaults.crossSessionMemoryEnabled(request.crossSessionMemoryEnabled());
+        }
+        if (request.clientType() != null && !request.clientType().isBlank()) {
+            builder.clientType(request.clientType());
+        }
+        builder.requestDefaults(defaults.build())
+                .instructionDirectories(request.instructionDirectories());
     }
 
     private static void configureTools(DigitalWorker.Builder builder, WorkerConfig config, WorkerAuth auth,
                                        SecretProvider secrets) {
         WorkerConfig.Tools tools = config.tools();
         if (tools.builtinTools()) builder.enableBuiltinTools(tools.allowedShellCommands());
+        if (tools.shell().commandTimeout() != null) builder.shellCommandTimeout(tools.shell().commandTimeout());
+        if (tools.subtask().timeout() != null) builder.subtaskTimeout(tools.subtask().timeout());
+        if (tools.subtask().maxParallelism() != null) builder.subtaskMaxParallelism(tools.subtask().maxParallelism());
+        if (tools.subtask().maxTasks() != null) builder.subtaskMaxTasks(tools.subtask().maxTasks());
         if (tools.media()) builder.enableMediaUnderstanding();
         configureBrowser(builder, tools.browser(), secrets);
         WorkerConfig.Skills skills = tools.skills();

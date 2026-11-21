@@ -11,22 +11,31 @@ import io.taiyiflow.sdk.core.state.SessionState;
 import io.taiyiflow.sdk.core.subtask.SubtaskCapabilitySnapshot;
 import io.taiyiflow.sdk.hooks.StreamHook;
 import io.taiyiflow.sdk.transport.envelope.ChatRequest;
+import io.taiyiflow.sdk.transport.envelope.ResumableCheckpoint;
 import io.taiyiflow.sdk.transport.envelope.StreamEvent;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
+import java.util.function.Consumer;
 import java.util.function.Function;
 
 public final class AgentSessionTaskHandler implements WorkerTaskHandler, AutoCloseable {
     private static final ObjectMapper mapper = new ObjectMapper();
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(AgentSessionTaskHandler.class);
 
     private final Function<String, TaiyiAgent> agentFactory;
     private volatile SubtaskMcpResolver mcpResolver = (flowId, names) -> mapper.createObjectNode();
     private final Map<String, TaiyiAgent> agents = new ConcurrentHashMap<>();
     private final Map<String, SessionExecution> sessions = new ConcurrentHashMap<>();
+    // Per-key gate so concurrent resume notifications for one session can't race the
+    // check-then-put below into two SessionExecution objects (double resume / orphaned entry).
+    private final Map<String, Object> resumeGates = new ConcurrentHashMap<>();
+    private final AtomicBoolean recoveryInFlight = new AtomicBoolean();
     private volatile BiConsumer<CollaborationPlugin.TaskDispatch, TaskControl> controlRegistered =
             (task, control) -> { };
     private volatile BiConsumer<CollaborationPlugin.TaskDispatch, TaskControl> controlUnregistered =
@@ -106,11 +115,86 @@ public final class AgentSessionTaskHandler implements WorkerTaskHandler, AutoClo
                 .forEach(flowId -> agents.computeIfAbsent(flowId, agentFactory).flushResumeReports());
     }
 
+    /**
+     * Reconnect recovery round (Electron agent-loop-recovery): single-flight, callers flush
+     * callback compensation first, then every disconnected session resumes in parallel on its
+     * own virtual thread. Like platform-driven resume notifications this is an explicit external
+     * trigger, so it also applies under MANUAL recovery policy. A session-level failure leaves
+     * that session pending for the next round and never aborts the whole round.
+     */
+    void recoverDisconnectedSessions() {
+        if (!recoveryInFlight.compareAndSet(false, true)) {
+            return;
+        }
+        try {
+            for (SessionExecution execution : sessions.values()) {
+                try {
+                    if (execution.session.getState() == SessionState.DISCONNECTED) {
+                        execution.session.resume();
+                    }
+                } catch (Exception exception) {
+                    log.warn("Recovery stays pending for session {}: {}",
+                            execution.session.getSessionId(), exception.getMessage());
+                }
+            }
+        } finally {
+            recoveryInFlight.set(false);
+        }
+    }
+
+    long countSessionsInState(SessionState state) {
+        return sessions.values().stream()
+                .filter(execution -> execution.session.getState() == state)
+                .count();
+    }
+
+    /**
+     * Platform-driven checkpoint resume (agent_loop.resume.v1). The ack consumer receives
+     * Electron-compatible results; unacknowledged failures let the platform re-deliver.
+     */
+    void resumeAgentLoop(CollaborationPlugin.ResumeRequest request, Consumer<String> ack) throws Exception {
+        TaiyiAgent agent = agents.computeIfAbsent(request.flowId, agentFactory);
+        String key = request.flowId + "\0" + request.sessionId;
+        synchronized (resumeGates.computeIfAbsent(key, ignored -> new Object())) {
+            SessionExecution existing = sessions.get(key);
+            if (existing != null && existing.isExecuting()) {
+                ack.accept("already_running");
+                return;
+            }
+            List<ResumableCheckpoint> checkpoints =
+                    agent.executionControl().listResumable(request.flowId, request.sessionId);
+            ResumableCheckpoint match = checkpoints.stream()
+                    .filter(candidate -> request.checkpointId.equals(candidate.getId())
+                            && candidate.getVersion() == request.checkpointVersion)
+                    .findFirst().orElse(null);
+            if (match == null) {
+                ack.accept("ignored_stale");
+                return;
+            }
+            if (existing != null && existing.canAdoptCheckpoint()) {
+                String currentRunId = existing.session.getRunContext().getRunId();
+                if (currentRunId != null && !currentRunId.equals(match.getRunId())) {
+                    ack.accept("ignored_stale");
+                    return;
+                }
+                existing.resumeCheckpoint(match, ack);
+                return;
+            }
+            if (existing != null) {
+                sessions.remove(key, existing);
+            }
+            SessionExecution execution = new SessionExecution(agent, request.sessionId);
+            sessions.put(key, execution);
+            execution.resumeCheckpoint(match, ack);
+        }
+    }
+
     @Override
     public void close() {
         agents.values().forEach(TaiyiAgent::shutdown);
         agents.clear();
         sessions.clear();
+        resumeGates.clear();
     }
 
     private final class SessionExecution {
@@ -118,6 +202,10 @@ public final class AgentSessionTaskHandler implements WorkerTaskHandler, AutoClo
         private final StringBuilder text = new StringBuilder();
         private final AtomicReference<String> protocolError = new AtomicReference<>();
         private final AtomicReference<Throwable> transportError = new AtomicReference<>();
+        // One reusable resume-ack hook (registered once below) instead of a new permanent StreamHook
+        // per resume, which would accumulate on the session and leak across repeated resumes.
+        private final AtomicReference<Consumer<String>> resumeAck = new AtomicReference<>();
+        private final AtomicBoolean resumeAccepted = new AtomicBoolean();
 
         private SessionExecution(TaiyiAgent agent, String sessionId) {
             this.session = sessionId == null ? agent.newSession() : agent.newSession(sessionId);
@@ -131,6 +219,11 @@ public final class AgentSessionTaskHandler implements WorkerTaskHandler, AutoClo
                 public void onEvent(String ignored, StreamEvent event) {
                     if (event.isError()) {
                         protocolError.set(event.getErrorMessage());
+                    }
+                    Consumer<String> ack = resumeAck.get();
+                    // The first stream event proves the backend processed the resume first frame.
+                    if (ack != null && resumeAccepted.compareAndSet(false, true)) {
+                        ack.accept("accepted");
                     }
                 }
 
@@ -148,14 +241,30 @@ public final class AgentSessionTaskHandler implements WorkerTaskHandler, AutoClo
             SessionControl control = new SessionControl(session);
             controlRegistered.accept(task, control);
             try {
+                // Registration synchronously replays a pending cancel; re-check before opening the
+                // stream so a cancel that arrived during preparation is never lost.
+                if (control.cancelRequested) {
+                    throw new TaskCancelledException();
+                }
                 if ("dialogue_subtask".equals(task.taskKind)) {
                     session.chat(chatRequest(task));
                 } else {
                     session.chat(task.inputValue);
                 }
                 while (true) {
+                    if (control.cancelRequested) {
+                        // Covers a cancel that slipped between the pre-start check and chat().
+                        if (session.isActive()) {
+                            try {
+                                session.cancel();
+                            } catch (IllegalStateException ignored) {
+                                // The run reached a non-cancellable state concurrently.
+                            }
+                        }
+                        throw new TaskCancelledException();
+                    }
                     try {
-                        session.await();
+                        session.await(java.time.Duration.ofMillis(200));
                     } catch (InterruptedException exception) {
                         Thread.currentThread().interrupt();
                         throw exception;
@@ -191,12 +300,33 @@ public final class AgentSessionTaskHandler implements WorkerTaskHandler, AutoClo
                 controlUnregistered.accept(task, control);
             }
         }
+
+        private boolean isExecuting() {
+            SessionState state = session.getState();
+            return state == SessionState.CONNECTING || state == SessionState.STREAMING
+                    || state == SessionState.TOOL_CALLING || state == SessionState.PAUSING
+                    || state == SessionState.PAUSED || state == SessionState.RESUMING
+                    || state == SessionState.RESTARTING;
+        }
+
+        private boolean canAdoptCheckpoint() {
+            SessionState state = session.getState();
+            return state == SessionState.IDLE || state == SessionState.DISCONNECTED
+                    || state == SessionState.ERROR;
+        }
+
+        private void resumeCheckpoint(ResumableCheckpoint checkpoint, Consumer<String> ack) {
+            resumeAccepted.set(false);
+            resumeAck.set(ack);
+            session.resume(checkpoint);
+        }
     }
 
     private static final class SessionControl implements TaskControl {
         private final AgentSession session;
         private final Object monitor = new Object();
         private volatile boolean valid = true;
+        private volatile boolean cancelRequested;
 
         private SessionControl(AgentSession session) {
             this.session = session;
@@ -222,7 +352,11 @@ public final class AgentSessionTaskHandler implements WorkerTaskHandler, AutoClo
         @Override
         public void cancel() throws Exception {
             if (valid) {
-                session.cancel();
+                cancelRequested = true;
+                // Before chat() there is no run to cancel remotely; the flag alone stops the start.
+                if (session.isActive()) {
+                    session.cancel();
+                }
                 synchronized (monitor) {
                     monitor.notifyAll();
                 }

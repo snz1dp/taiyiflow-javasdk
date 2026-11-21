@@ -4,18 +4,37 @@ import com.fasterxml.jackson.databind.JsonNode;
 import io.taiyiflow.sdk.collaboration.CollaborationPlugin;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Future;
 
 public final class TaskExecutor {
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(TaskExecutor.class);
     private static final int DEFAULT_REGISTRY_CAPACITY = 1024;
 
     private final WorkerTaskHandler handler;
     private final TaskReporter reporter;
     private final int registryCapacity;
     private final Map<String, Execution> executions = new ConcurrentHashMap<>();
+    // Cancels may arrive before the dispatch is registered (no execution to abort yet);
+    // remember them so prepare() can refuse to start, mirroring Electron's cancel registry.
+    private final Map<String, CollaborationPlugin.TaskCancel> pendingCancels =
+            Collections.synchronizedMap(new LinkedHashMap<>(16, 0.75f, false) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, CollaborationPlugin.TaskCancel> eldest) {
+                    if (size() > registryCapacity) {
+                        // Eviction drops a cancel that arrived before its dispatch; surface it so the
+                        // lost cancellation is observable rather than silently allowing the task to run.
+                        log.warn("Pending cancel registry exceeded capacity {}; evicting oldest cancel for {} "
+                                + "which may now start unchecked", registryCapacity, eldest.getKey());
+                        return true;
+                    }
+                    return false;
+                }
+            });
 
     public TaskExecutor(WorkerTaskHandler handler, TaskReporter reporter) {
         this(handler, reporter, DEFAULT_REGISTRY_CAPACITY);
@@ -48,18 +67,46 @@ public final class TaskExecutor {
             }
             return current;
         });
-        return new Reservation(execution, execution == proposed && proposed.accepted);
+        boolean accepted = execution == proposed && proposed.accepted;
+        if (accepted) {
+            applyPendingCancel(execution);
+        }
+        return new Reservation(execution, accepted);
+    }
+
+    private void applyPendingCancel(Execution execution) {
+        CollaborationPlugin.TaskCancel pending = pendingCancels.remove(execution.key);
+        if (pending == null) {
+            return;
+        }
+        synchronized (execution) {
+            if (pending.version > 0 && execution.task.version > 0
+                    && pending.version < execution.task.version) {
+                return;
+            }
+            if (pending.version > execution.task.version) {
+                execution.task.version = pending.version;
+            }
+            execution.cancelRequested = true;
+            execution.cancelRequestId = pending.cancelRequestId;
+        }
     }
 
     void attachFuture(Reservation reservation, Future<?> future) {
         Execution execution = reservation.execution;
         boolean cancel;
+        boolean handlerStarted;
         synchronized (execution) {
             execution.future = future;
             cancel = execution.cancelRequested;
+            handlerStarted = execution.handlerStarted;
         }
         if (cancel) {
-            future.cancel(!execution.handlerStarted);
+            // Same interrupt semantics as cancel(): only interrupt a handler that already started.
+            future.cancel(handlerStarted);
+            if (!handlerStarted) {
+                completeCancellation(execution);
+            }
         }
     }
 
@@ -94,6 +141,11 @@ public final class TaskExecutor {
             }
             execution.state = TaskExecutionState.REPORT_UNKNOWN;
             return execution.state;
+        }
+        // A cancel may land during the running-report REST window, before the handler registers
+        // its control; never start the stream for an already-cancelled task.
+        if (execution.cancelRequested) {
+            return completeCancellation(execution);
         }
         final Object result;
         try {
@@ -165,10 +217,16 @@ public final class TaskExecutor {
         if (cancel.taskId == null || cancel.taskId.isBlank()) {
             return false;
         }
-        Execution execution = executions.get("task:" + cancel.taskId);
+        String key = "task:" + cancel.taskId;
+        Execution execution = executions.get(key);
         if (execution == null) {
-            return false;
+            pendingCancels.put(key, cancel);
+            execution = executions.get(key);
+            if (execution == null) {
+                return true;
+            }
         }
+        pendingCancels.remove(key);
         synchronized (execution) {
             if (cancel.version > 0 && execution.task.version > 0
                     && cancel.version < execution.task.version) {

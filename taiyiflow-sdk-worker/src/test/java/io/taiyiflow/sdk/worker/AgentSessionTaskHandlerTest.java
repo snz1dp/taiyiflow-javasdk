@@ -9,6 +9,8 @@ import io.taiyiflow.sdk.RecoveryPolicy;
 import io.taiyiflow.sdk.StreamProtocol;
 import io.taiyiflow.sdk.TaiyiAgent;
 import io.taiyiflow.sdk.collaboration.CollaborationPlugin;
+import io.taiyiflow.sdk.core.state.SessionState;
+import io.taiyiflow.sdk.hooks.StreamHook;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -17,6 +19,8 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
@@ -27,6 +31,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -110,6 +115,7 @@ class AgentSessionTaskHandlerTest {
     void pauseAndResumeUseRealSessionControls() throws Exception {
         List<JsonNode> requests = new CopyOnWriteArrayList<>();
         CountDownLatch firstRequest = new CountDownLatch(1);
+        CountDownLatch workingReceived = new CountDownLatch(1);
         CountDownLatch streamRelease = new CountDownLatch(1);
         AtomicInteger turn = new AtomicInteger();
         AtomicInteger pauseCalls = new AtomicInteger();
@@ -135,10 +141,27 @@ class AgentSessionTaskHandlerTest {
         AtomicReference<TaskControl> control = new AtomicReference<>();
         ExecutorService caller = Executors.newVirtualThreadPerTaskExecutor();
         try (AgentSessionTaskHandler handler = new AgentSessionTaskHandler(
-                flowId -> agent(flowId, () -> "token"))) {
+                flowId -> TaiyiAgent.builder()
+                        .baseUrl(baseUrl)
+                        .accessToken(() -> "token")
+                        .flowId(flowId)
+                        .streamProtocol(StreamProtocol.SSE)
+                        .recoveryPolicy(RecoveryPolicy.MANUAL)
+                        .onStream(new StreamHook() {
+                            @Override
+                            public void onChunk(String ignored, String chunk) {
+                                if ("working".equals(chunk)) {
+                                    workingReceived.countDown();
+                                }
+                            }
+                        })
+                        .build())) {
             handler.onControl((task, value) -> control.set(value), (task, value) -> value.invalidate());
             Future<Object> result = caller.submit(() -> handler.execute(task("run"), progress -> { }));
             assertTrue(firstRequest.await(2, TimeUnit.SECONDS));
+            // The mock resume stream does not re-deliver events, so pause must wait until the
+            // client consumed "working"; the server-side flush alone does not guarantee that.
+            assertTrue(workingReceived.await(2, TimeUnit.SECONDS));
 
             control.get().pause();
             streamRelease.countDown();
@@ -198,6 +221,37 @@ class AgentSessionTaskHandlerTest {
     }
 
     @Test
+    void pendingCancelAtControlRegistrationPreventsStreamStart() throws Exception {
+        AtomicInteger streamCalls = new AtomicInteger();
+        AtomicInteger cancelCalls = new AtomicInteger();
+        server.createContext("/api/v1/run/flow-1/stream", exchange -> {
+            streamCalls.incrementAndGet();
+            respond(exchange, 200, "event: close\ndata: {\"run_finished\":true}\n\n");
+        });
+        server.createContext("/api/v1/run/sessions/", exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            cancelCalls.incrementAndGet();
+            respond(exchange, 202, "{\"status\":\"cancel_requested\"}");
+        });
+        server.start();
+        try (AgentSessionTaskHandler handler = new AgentSessionTaskHandler(
+                flowId -> agent(flowId, () -> "token"))) {
+            // Simulates TaskExecutor.registerControl replaying a cancel that arrived before start.
+            handler.onControl((task, control) -> {
+                try {
+                    control.cancel();
+                } catch (Exception e) {
+                    throw new RuntimeException(e);
+                }
+            }, (task, control) -> control.invalidate());
+
+            assertThrows(TaskCancelledException.class, () -> handler.execute(task("run"), progress -> { }));
+            assertEquals(0, streamCalls.get());
+            assertEquals(0, cancelCalls.get(), "no run exists yet, so no remote cancel is issued");
+        }
+    }
+
+    @Test
     void dialogueSubtaskUsesFrozenCapabilitiesAndFiltersMcpResolver() throws Exception {
         AtomicReference<JsonNode> request = new AtomicReference<>();
         server.createContext("/api/v1/run/flow-1/stream", exchange -> {
@@ -244,6 +298,254 @@ class AgentSessionTaskHandlerTest {
             assertTrue(error.getMessage().contains("request_mode"));
             assertEquals(0, streams.get());
         }
+    }
+
+    @Test
+    void platformResumeNotificationResumesCheckpointAndAcksAcceptedOnFirstEvent() throws Exception {
+        List<JsonNode> requests = new CopyOnWriteArrayList<>();
+        AtomicInteger turn = new AtomicInteger();
+        server.createContext("/api/v1/run/flow-1/stream", exchange -> {
+            requests.add(mapper.readTree(exchange.getRequestBody()));
+            int currentTurn = turn.incrementAndGet();
+            respond(exchange, 200, "event: message\ndata: {\"chunk\":\"turn-" + currentTurn
+                    + "\",\"run_id\":\"run-1\"}\n\n"
+                    + "event: close\ndata: {\"run_finished\":true}\n\n");
+        });
+        server.createContext("/api/v1/run/checkpoints/resumable", exchange ->
+                respond(exchange, 200, "[{\"id\":\"checkpoint-1\",\"session_id\":\"client-session\","
+                        + "\"run_id\":\"run-1\",\"status\":\"ready\",\"version\":3}]"));
+        server.start();
+        AtomicInteger agents = new AtomicInteger();
+        List<String> acks = new CopyOnWriteArrayList<>();
+        try (AgentSessionTaskHandler handler = new AgentSessionTaskHandler(flowId -> {
+            agents.incrementAndGet();
+            return agent(flowId, () -> "token");
+        })) {
+            handler.execute(task("first"), progress -> { });
+
+            handler.resumeAgentLoop(resumeRequest("checkpoint-1", 3), acks::add);
+
+            awaitValue(() -> !acks.isEmpty());
+            assertEquals(List.of("accepted"), acks);
+            assertEquals(1, agents.get());
+            awaitValue(() -> requests.size() == 2);
+            JsonNode resume = requests.get(1);
+            assertEquals("resume", resume.required("execution_mode").asText());
+            assertEquals("checkpoint-1", resume.required("checkpoint_id").asText());
+            assertEquals(3, resume.required("checkpoint_version").asInt());
+            assertEquals("run-1", resume.required("run_id").asText());
+            assertEquals("client-session", resume.required("session_id").asText());
+        }
+    }
+
+    @Test
+    void resumeAckIsNotSentBeforeTheFirstStreamEvent() throws Exception {
+        CountDownLatch resumeEntered = new CountDownLatch(1);
+        CountDownLatch streamRelease = new CountDownLatch(1);
+        AtomicInteger turn = new AtomicInteger();
+        List<JsonNode> requests = new CopyOnWriteArrayList<>();
+        server.createContext("/api/v1/run/flow-1/stream", exchange -> {
+            requests.add(mapper.readTree(exchange.getRequestBody()));
+            int currentTurn = turn.incrementAndGet();
+            exchange.getResponseHeaders().set("Content-Type", "text/event-stream");
+            exchange.sendResponseHeaders(200, 0);
+            exchange.getResponseBody().flush();
+            if (currentTurn == 2) {
+                resumeEntered.countDown();
+                try {
+                    streamRelease.await(5, TimeUnit.SECONDS);
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+            exchange.getResponseBody().write(("event: message\ndata: {\"chunk\":\"turn-" + currentTurn
+                    + "\",\"run_id\":\"run-1\"}\n\n"
+                    + "event: close\ndata: {\"run_finished\":true}\n\n").getBytes(StandardCharsets.UTF_8));
+            exchange.getResponseBody().flush();
+            exchange.close();
+        });
+        server.createContext("/api/v1/run/checkpoints/resumable", exchange ->
+                respond(exchange, 200, "[{\"id\":\"checkpoint-1\",\"session_id\":\"client-session\","
+                        + "\"run_id\":\"run-1\",\"status\":\"ready\",\"version\":3}]"));
+        server.start();
+        List<String> acks = new CopyOnWriteArrayList<>();
+        try (AgentSessionTaskHandler handler = new AgentSessionTaskHandler(
+                flowId -> agent(flowId, () -> "token"))) {
+            handler.execute(task("first"), progress -> { });
+
+            handler.resumeAgentLoop(resumeRequest("checkpoint-1", 3), acks::add);
+            assertTrue(resumeEntered.await(2, TimeUnit.SECONDS));
+            // The resumed stream is held before its first event: no ack may have been sent yet.
+            assertTrue(acks.isEmpty());
+
+            streamRelease.countDown();
+            awaitValue(() -> !acks.isEmpty());
+            assertEquals(List.of("accepted"), acks);
+            awaitValue(() -> requests.size() == 2);
+        } finally {
+            streamRelease.countDown();
+        }
+    }
+
+    @Test
+    void platformResumeNotificationAcksStaleWhenVersionNoLongerResumable() throws Exception {
+        AtomicInteger streams = new AtomicInteger();
+        server.createContext("/api/v1/run/flow-1/stream", exchange -> {
+            streams.incrementAndGet();
+            respond(exchange, 500, "unexpected");
+        });
+        server.createContext("/api/v1/run/checkpoints/resumable", exchange ->
+                respond(exchange, 200, "[{\"id\":\"checkpoint-1\",\"session_id\":\"client-session\","
+                        + "\"run_id\":\"run-1\",\"status\":\"ready\",\"version\":4}]"));
+        server.start();
+        List<String> acks = new CopyOnWriteArrayList<>();
+        try (AgentSessionTaskHandler handler = new AgentSessionTaskHandler(
+                flowId -> agent(flowId, () -> "token"))) {
+            handler.resumeAgentLoop(resumeRequest("checkpoint-1", 3), acks::add);
+
+            assertEquals(List.of("ignored_stale"), acks);
+            assertEquals(0, streams.get());
+        }
+    }
+
+    @Test
+    void platformResumeNotificationAcksAlreadyRunningWhileTaskExecutes() throws Exception {
+        CountDownLatch firstRequest = new CountDownLatch(1);
+        CountDownLatch streamRelease = new CountDownLatch(1);
+        AtomicInteger checkpointCalls = new AtomicInteger();
+        server.createContext("/api/v1/run/flow-1/stream", exchange -> {
+            mapper.readTree(exchange.getRequestBody());
+            exchange.getResponseHeaders().set("Content-Type", "text/event-stream");
+            exchange.sendResponseHeaders(200, 0);
+            exchange.getResponseBody().write(("event: message\ndata: {\"chunk\":\"working\","
+                    + "\"run_id\":\"run-1\",\"execution_attempt_id\":\"attempt-1\",\"event_id\":\"event-1\"}\n\n")
+                    .getBytes(StandardCharsets.UTF_8));
+            exchange.getResponseBody().flush();
+            firstRequest.countDown();
+            try {
+                streamRelease.await(5, TimeUnit.SECONDS);
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+            }
+            exchange.getResponseBody().write("event: close\ndata: {\"run_finished\":true}\n\n"
+                    .getBytes(StandardCharsets.UTF_8));
+            exchange.getResponseBody().flush();
+            exchange.close();
+        });
+        server.createContext("/api/v1/run/checkpoints/resumable", exchange -> {
+            checkpointCalls.incrementAndGet();
+            respond(exchange, 200, "[]");
+        });
+        server.start();
+        List<String> acks = new CopyOnWriteArrayList<>();
+        ExecutorService caller = Executors.newVirtualThreadPerTaskExecutor();
+        try (AgentSessionTaskHandler handler = new AgentSessionTaskHandler(
+                flowId -> agent(flowId, () -> "token"))) {
+            Future<Object> result = caller.submit(() -> handler.execute(task("run"), progress -> { }));
+            assertTrue(firstRequest.await(2, TimeUnit.SECONDS));
+
+            handler.resumeAgentLoop(resumeRequest("checkpoint-1", 3), acks::add);
+
+            assertEquals(List.of("already_running"), acks);
+            assertEquals(0, checkpointCalls.get());
+            streamRelease.countDown();
+            result.get(5, TimeUnit.SECONDS);
+        } finally {
+            streamRelease.countDown();
+            caller.shutdownNow();
+        }
+    }
+
+    @Test
+    void reconnectRoundResumesDisconnectedSessionsAndIsolatesFailures() throws Exception {
+        List<JsonNode> requests = new CopyOnWriteArrayList<>();
+        Map<String, AtomicInteger> streamTurns = new ConcurrentHashMap<>();
+        server.createContext("/api/v1/run/flow-1/stream", exchange -> {
+            JsonNode request = mapper.readTree(exchange.getRequestBody());
+            requests.add(request);
+            String sessionId = request.required("session_id").asText();
+            int turn = streamTurns.computeIfAbsent(sessionId, ignored -> new AtomicInteger())
+                    .incrementAndGet();
+            String message = "event: message\ndata: {\"chunk\":\"part\",\"run_id\":\"run-1\","
+                    + "\"execution_attempt_id\":\"attempt-" + turn + "\",\"event_id\":\"event-" + turn + "\"}\n\n";
+            if (turn > 1 && !"session-c".equals(sessionId)) {
+                respond(exchange, 200, message + "event: close\ndata: {\"run_finished\":true}\n\n");
+            } else {
+                // EOF without a close event drops the session into DISCONNECTED under MANUAL.
+                respond(exchange, 200, message);
+            }
+        });
+        Map<String, AtomicInteger> checkpointCalls = new ConcurrentHashMap<>();
+        server.createContext("/api/v1/run/checkpoints/resumable", exchange -> {
+            String sessionId = queryParam(exchange, "session_id");
+            int call = checkpointCalls.computeIfAbsent(sessionId, ignored -> new AtomicInteger())
+                    .incrementAndGet();
+            if (call > 1 && "session-c".equals(sessionId)) {
+                respond(exchange, 200, "[]");
+                return;
+            }
+            respond(exchange, 200, "[{\"id\":\"checkpoint-1\",\"session_id\":\"" + sessionId
+                    + "\",\"run_id\":\"run-1\",\"status\":\"ready\",\"version\":3}]");
+        });
+        server.start();
+        List<String> acks = new CopyOnWriteArrayList<>();
+        try (AgentSessionTaskHandler handler = new AgentSessionTaskHandler(
+                flowId -> agent(flowId, () -> "token"))) {
+            for (String sessionId : List.of("session-a", "session-b", "session-c")) {
+                CollaborationPlugin.ResumeRequest request = resumeRequest("checkpoint-1", 3);
+                request.sessionId = sessionId;
+                handler.resumeAgentLoop(request, acks::add);
+            }
+            awaitValue(() -> handler.countSessionsInState(SessionState.DISCONNECTED) == 3);
+            assertEquals(3, acks.size());
+
+            handler.recoverDisconnectedSessions();
+            assertDoesNotThrow(handler::recoverDisconnectedSessions);
+
+            awaitValue(() -> requests.size() == 5);
+            awaitValue(() -> handler.countSessionsInState(SessionState.DONE) == 2);
+            awaitValue(() -> handler.countSessionsInState(SessionState.ERROR) == 1);
+            for (String sessionId : List.of("session-a", "session-b")) {
+                List<JsonNode> sessionRequests = requests.stream()
+                        .filter(request -> sessionId.equals(request.required("session_id").asText()))
+                        .toList();
+                assertEquals(2, sessionRequests.size());
+                JsonNode resume = sessionRequests.get(1);
+                assertEquals("resume", resume.required("execution_mode").asText());
+                assertEquals("checkpoint-1", resume.required("checkpoint_id").asText());
+                assertEquals(3, resume.required("checkpoint_version").asInt());
+                assertEquals("run-1", resume.required("run_id").asText());
+            }
+        }
+    }
+
+    private static String queryParam(HttpExchange exchange, String name) {
+        for (String pair : exchange.getRequestURI().getRawQuery().split("&")) {
+            int equals = pair.indexOf('=');
+            if (equals > 0 && pair.substring(0, equals).equals(name)) {
+                return java.net.URLDecoder.decode(pair.substring(equals + 1), StandardCharsets.UTF_8);
+            }
+        }
+        return null;
+    }
+
+    private static CollaborationPlugin.ResumeRequest resumeRequest(String checkpointId, int version) {
+        CollaborationPlugin.ResumeRequest request = new CollaborationPlugin.ResumeRequest();
+        request.notificationId = checkpointId + ":" + version;
+        request.checkpointId = checkpointId;
+        request.checkpointVersion = version;
+        request.flowId = "flow-1";
+        request.sessionId = "client-session";
+        request.runId = "run-1";
+        return request;
+    }
+
+    private static void awaitValue(java.util.function.BooleanSupplier check) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (!check.getAsBoolean() && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        assertTrue(check.getAsBoolean());
     }
 
     private CollaborationPlugin.TaskDispatch subtask(String mode) {

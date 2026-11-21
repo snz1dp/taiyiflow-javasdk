@@ -14,9 +14,11 @@ import io.taiyiflow.sdk.core.subtask.SubtaskTask;
 import io.taiyiflow.sdk.hooks.PermissionHook;
 import io.taiyiflow.sdk.hooks.PermissionPolicy;
 import io.taiyiflow.sdk.plugins.BuiltinPlugins;
+import io.taiyiflow.sdk.transport.rest.ConfigClient;
 import io.taiyiflow.sdk.transport.rest.FileClient;
 import io.taiyiflow.sdk.transport.rest.MemoryClient;
 import io.taiyiflow.sdk.transport.rest.RestClient;
+import io.taiyiflow.sdk.transport.rest.ServiceConfig;
 import io.taiyiflow.sdk.worker.auth.WorkerAuth;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -49,6 +51,8 @@ public final class DigitalWorker {
     private final io.taiyiflow.sdk.core.skill.SkillSupplier skillSupplier;
     private final io.taiyiflow.sdk.plugins.skill.SkillManager skillManager;
     private final List<String> defaultSkillNames;
+    private final io.taiyiflow.sdk.RequestDefaults requestDefaults;
+    private final List<Path> instructionDirectories;
     private final boolean mediaEnabled;
     private final Consumer<TaiyiAgent> agentCustomizer;
     private final RecoveryPolicy recoveryPolicy;
@@ -66,6 +70,14 @@ public final class DigitalWorker {
     private final Duration connectTimeout;
     private final Duration drainTimeout;
     private final Duration requestTimeout;
+    private final Duration streamIdleTimeout;
+    private final Duration toolExecutionTimeout;
+    private final int subtaskMaxTasks;
+    private final int subtaskMaxParallelism;
+    private final Duration subtaskTimeout;
+    private final String clientType;
+    private final Duration shellCommandTimeout;
+    private final Integer maxSessionConcurrency;
     private final WorkerRuntime runtime;
     private final AtomicBoolean stopped = new AtomicBoolean();
 
@@ -95,13 +107,20 @@ public final class DigitalWorker {
         this.skillSupplier = builder.skillSupplier;
         this.skillManager = builder.skillManager;
         this.defaultSkillNames = List.copyOf(builder.defaultSkillNames);
+        this.requestDefaults = builder.requestDefaults;
+        this.instructionDirectories = List.copyOf(builder.instructionDirectories);
         this.mediaEnabled = builder.mediaEnabled;
         this.agentCustomizer = builder.agentCustomizer;
         this.recoveryPolicy = builder.recoveryPolicy;
         this.permissionPolicy = builder.permissionPolicy;
         this.approvalChannel = builder.approvalChannel;
+        io.taiyiflow.sdk.core.security.PermissionGate baseGate =
+                new io.taiyiflow.sdk.core.security.PermissionGate(
+                        builder.permissionSettings != null ? builder.permissionSettings
+                                : io.taiyiflow.sdk.core.security.PermissionSettings.builder()
+                                        .policy(builder.permissionPolicy).build());
         this.approvalHook = new WorkerApprovalHook(
-                permissionPolicy, approvalChannel, builder.approvalHandler, builder.approvalAudit);
+                baseGate, approvalChannel, builder.approvalHandler, builder.approvalAudit);
         this.workerHooks = List.copyOf(builder.workerHooks);
         this.agentSessionTaskHandler = new AgentSessionTaskHandler(this::newAgent);
         if (builder.subtaskMcpResolver != null) {
@@ -125,6 +144,14 @@ public final class DigitalWorker {
         this.connectTimeout = builder.connectTimeout;
         this.drainTimeout = builder.drainTimeout;
         this.requestTimeout = builder.requestTimeout;
+        this.streamIdleTimeout = builder.streamIdleTimeout;
+        this.toolExecutionTimeout = builder.toolExecutionTimeout;
+        this.subtaskMaxTasks = builder.subtaskMaxTasks;
+        this.subtaskMaxParallelism = builder.subtaskMaxParallelism;
+        this.subtaskTimeout = builder.subtaskTimeout;
+        this.clientType = builder.clientType;
+        this.shellCommandTimeout = builder.shellCommandTimeout;
+        this.maxSessionConcurrency = builder.maxSessionConcurrency;
         this.runtime = new WorkerRuntime(builder.concurrency);
     }
 
@@ -154,27 +181,24 @@ public final class DigitalWorker {
             instanceId = role == WorkerRole.PRIMARY_CLI ? InstanceIdStore.loadOrCreate(workspace) : null;
             clientId = configuredClientId != null ? configuredClientId : UUID.randomUUID().toString();
             deviceId = configuredDeviceId != null ? configuredDeviceId : auth.deviceId();
-            subtaskOrchestrator = new SubtaskOrchestrator(restClient, clientId, deviceId,
-                    new LocalSubtaskExecutor() {
-                        @Override
-                        public boolean submit(SubtaskTask task,
-                                              io.taiyiflow.sdk.core.dispatch.ToolExecutionContext.Cancellation cancellation) {
-                            return submitLocalSubtask(task);
-                        }
-
-                        @Override
-                        public void cancel(SubtaskTask task) {
-                            cancelLocalSubtask(task);
-                        }
-                    });
+            ServiceConfig serviceConfig = null;
+            try {
+                serviceConfig = new ConfigClient(restClient).getServiceConfig();
+            } catch (Exception e) {
+                log.warn("Failed to load /config quotas; keeping local subtask limits: {}", e.getMessage());
+            }
+            subtaskOrchestrator = createSubtaskOrchestrator(serviceConfig);
             readyLatch = new CountDownLatch(1);
             collaboration = new CollaborationPlugin(
                     baseUrl, auth::accessToken, role.protocolName(), clientId, deviceId, instanceId, Map.of())
                     .onTaskDispatch(this::dispatch)
                     .onTaskSnapshot(taskExecutor::reconcile)
                     .onTaskCancel(this::cancel)
+                    .onResumeRequested(request -> Thread.ofVirtual().name("agent-loop-resume")
+                            .start(() -> resumeAgentLoop(request)))
                     .onConnectionReady(payload -> {
                         flushReports();
+                        agentSessionTaskHandler.recoverDisconnectedSessions();
                         runtime.online();
                         readyLatch.countDown();
                     })
@@ -193,6 +217,34 @@ public final class DigitalWorker {
             runtime.offline();
             throw e;
         }
+    }
+
+    /**
+     * Electron-style quota merge: server null keeps the local limit, server 0 disables
+     * run_subtask supply entirely (returns null), otherwise min(local, server).
+     */
+    SubtaskOrchestrator createSubtaskOrchestrator(ServiceConfig serviceConfig) {
+        Integer serverParallelism = serviceConfig == null ? null : serviceConfig.maxParallelismSubtask();
+        int mergedParallelism = serverParallelism == null ? subtaskMaxParallelism
+                : serverParallelism == 0 ? 0 : Math.min(subtaskMaxParallelism, serverParallelism);
+        if (mergedParallelism <= 0) {
+            log.info("run_subtask supply disabled by server quota (max_parallelism_subtask=0)");
+            return null;
+        }
+        return new SubtaskOrchestrator(restClient, clientId, deviceId,
+                new LocalSubtaskExecutor() {
+                    @Override
+                    public boolean submit(SubtaskTask task,
+                                          io.taiyiflow.sdk.core.dispatch.ToolExecutionContext.Cancellation cancellation) {
+                        return submitLocalSubtask(task);
+                    }
+
+                    @Override
+                    public void cancel(SubtaskTask task) {
+                        cancelLocalSubtask(task);
+                    }
+                },
+                subtaskMaxTasks, mergedParallelism, subtaskTimeout, Duration.ofMillis(250));
     }
 
     public void pause() {
@@ -259,6 +311,21 @@ public final class DigitalWorker {
         return new FileClient(restClient);
     }
 
+    /** Initiator-side desktop/principal directory for remote subtask dispatch. */
+    public io.taiyiflow.sdk.transport.rest.ClientDirectoryClient clientDirectory() {
+        return new io.taiyiflow.sdk.transport.rest.ClientDirectoryClient(restClient);
+    }
+
+    /** Quota/credit preflight before starting chats (avoids discovering exhaustion via WS close 4003). */
+    public io.taiyiflow.sdk.transport.rest.QuotaCreditClient quotaCredits() {
+        return new io.taiyiflow.sdk.transport.rest.QuotaCreditClient(restClient);
+    }
+
+    /** Container liveness/readiness probes and server version. */
+    public io.taiyiflow.sdk.transport.rest.PlatformProbeClient probes() {
+        return new io.taiyiflow.sdk.transport.rest.PlatformProbeClient(restClient);
+    }
+
     public FileClient.UploadedFile uploadArtifact(String flowId, String sessionId, Path file) throws Exception {
         return files().upload(flowId, sessionId, file);
     }
@@ -320,6 +387,22 @@ public final class DigitalWorker {
         return approvalChannel;
     }
 
+    public io.taiyiflow.sdk.RequestDefaults getRequestDefaults() {
+        return requestDefaults;
+    }
+
+    public Duration getStreamIdleTimeout() {
+        return streamIdleTimeout;
+    }
+
+    public Duration getToolExecutionTimeout() {
+        return toolExecutionTimeout;
+    }
+
+    public List<Path> getInstructionDirectories() {
+        return instructionDirectories;
+    }
+
     private TaiyiAgent newAgent(String flowId) {
         TaiyiAgent.Builder agentBuilder = TaiyiAgent.builder()
                 .baseUrl(baseUrl)
@@ -328,15 +411,26 @@ public final class DigitalWorker {
                 .clientId(clientId)
                 .deviceId(deviceId)
                 .requestTimeout(requestTimeout)
+                .streamIdleTimeout(streamIdleTimeout)
+                .toolExecutionTimeout(toolExecutionTimeout)
                 .workspace(workspace)
                 .recoveryPolicy(recoveryPolicy)
                 .permissionPolicy(permissionPolicy)
                 .permissionHook(approvalHook)
-                .toolRuntime(toolRuntime);
+                .toolRuntime(toolRuntime)
+                .requestDefaults(requestDefaults)
+                .instructionDirectories(instructionDirectories);
+        if (clientType != null) agentBuilder.clientType(clientType);
+        agentBuilder.maxSessionConcurrency(maxSessionConcurrency);
         if (skillSupplier != null) agentBuilder.skillSupplier(skillSupplier, defaultSkillNames);
         TaiyiAgent agent = agentBuilder.build();
         if (builtinToolsEnabled) {
-            BuiltinPlugins.registerAll(agent.getPluginManager(), workspace, allowedShellCommands);
+            if (shellCommandTimeout != null) {
+                BuiltinPlugins.registerAll(agent.getPluginManager(), workspace, allowedShellCommands,
+                        shellCommandTimeout.toSeconds());
+            } else {
+                BuiltinPlugins.registerAll(agent.getPluginManager(), workspace, allowedShellCommands);
+            }
         }
         if (mediaEnabled) BuiltinPlugins.registerMedia(agent.getPluginManager(), agent.getRestClient());
         if (skillSupplier != null && skillManager != null) {
@@ -352,6 +446,26 @@ public final class DigitalWorker {
 
     private void cancel(CollaborationPlugin.TaskCancel cancel) {
         taskExecutor.cancel(cancel);
+    }
+
+    private void resumeAgentLoop(CollaborationPlugin.ResumeRequest request) {
+        CollaborationPlugin current = collaboration;
+        if (current == null) {
+            return;
+        }
+        WorkerState state = runtime.state();
+        if (state == WorkerState.PAUSED || state == WorkerState.OFFLINE) {
+            current.sendResumeNotificationAck(request.notificationId, request.checkpointId,
+                    request.checkpointVersion, "ignored_stopped");
+            return;
+        }
+        try {
+            agentSessionTaskHandler.resumeAgentLoop(request, result ->
+                    current.sendResumeNotificationAck(request.notificationId, request.checkpointId,
+                            request.checkpointVersion, result));
+        } catch (Exception exception) {
+            log.warn("Agent loop resume failed for checkpoint {}", request.checkpointId, exception);
+        }
     }
 
     private boolean submitLocalSubtask(SubtaskTask task) {
@@ -440,6 +554,7 @@ public final class DigitalWorker {
         private int concurrency = 3;
         private RecoveryPolicy recoveryPolicy = RecoveryPolicy.AUTO;
         private PermissionPolicy permissionPolicy = PermissionPolicy.CONFIRM;
+        private io.taiyiflow.sdk.core.security.PermissionSettings permissionSettings;
         private ApprovalChannel approvalChannel = ApprovalChannel.PLATFORM;
         private PermissionHook approvalHandler;
         private ApprovalAudit approvalAudit;
@@ -453,9 +568,19 @@ public final class DigitalWorker {
         private Duration connectTimeout = Duration.ofSeconds(15);
         private Duration drainTimeout = Duration.ofSeconds(30);
         private Duration requestTimeout = Duration.ofSeconds(30);
+        private Duration streamIdleTimeout = Duration.ofSeconds(1200);
+        private Duration toolExecutionTimeout;
+        private int subtaskMaxTasks = 16;
+        private int subtaskMaxParallelism = 4;
+        private Duration subtaskTimeout = Duration.ofHours(1);
+        private String clientType;
+        private Duration shellCommandTimeout;
+        private Integer maxSessionConcurrency;
         private io.taiyiflow.sdk.core.skill.SkillSupplier skillSupplier;
         private io.taiyiflow.sdk.plugins.skill.SkillManager skillManager;
         private List<String> defaultSkillNames = List.of();
+        private io.taiyiflow.sdk.RequestDefaults requestDefaults = io.taiyiflow.sdk.RequestDefaults.defaults();
+        private List<Path> instructionDirectories = List.of();
         private boolean mediaEnabled;
         private Consumer<TaiyiAgent> agentCustomizer = agent -> { };
 
@@ -536,6 +661,12 @@ public final class DigitalWorker {
             return this;
         }
 
+        /** Fine-grained permission settings; when set, they take precedence over permissionPolicy. */
+        public Builder permissionSettings(io.taiyiflow.sdk.core.security.PermissionSettings value) {
+            this.permissionSettings = value;
+            return this;
+        }
+
         public Builder approvalChannel(ApprovalChannel value) {
             this.approvalChannel = value;
             return this;
@@ -612,9 +743,90 @@ public final class DigitalWorker {
             return this;
         }
 
+        public Builder streamIdleTimeout(Duration value) {
+            if (value == null || value.isNegative()) {
+                throw new IllegalArgumentException("streamIdleTimeout must be >= 0 (0 disables idle checks)");
+            }
+            this.streamIdleTimeout = value;
+            return this;
+        }
+
+        public Builder toolExecutionTimeout(Duration value) {
+            if (value != null && (value.isZero() || value.isNegative())) {
+                throw new IllegalArgumentException("toolExecutionTimeout must be positive");
+            }
+            this.toolExecutionTimeout = value;
+            return this;
+        }
+
+        /** Local run_subtask batch ceiling; the server /config quota can only tighten it. Default 16. */
+        public Builder subtaskMaxTasks(int value) {
+            if (value < 1) {
+                throw new IllegalArgumentException("subtaskMaxTasks must be >= 1");
+            }
+            this.subtaskMaxTasks = value;
+            return this;
+        }
+
+        /** Local run_subtask parallelism; merged with server max_parallelism_subtask (0 disables supply). Default 4. */
+        public Builder subtaskMaxParallelism(int value) {
+            if (value < 1) {
+                throw new IllegalArgumentException("subtaskMaxParallelism must be >= 1");
+            }
+            this.subtaskMaxParallelism = value;
+            return this;
+        }
+
+        /** Per-subtask completion timeout. Default 1h. */
+        public Builder subtaskTimeout(Duration value) {
+            if (value == null || value.isZero() || value.isNegative()) {
+                throw new IllegalArgumentException("subtaskTimeout must be positive");
+            }
+            this.subtaskTimeout = value;
+            return this;
+        }
+
+        /** First-frame client_type override; null keeps the SDK default "device". */
+        public Builder clientType(String value) {
+            if (value != null && value.isBlank()) {
+                throw new IllegalArgumentException("clientType must not be blank");
+            }
+            this.clientType = value;
+            return this;
+        }
+
+        /** Shell command timeout for built-in tools; null keeps the plugin default (30s). */
+        public Builder shellCommandTimeout(Duration value) {
+            if (value != null && (value.isZero() || value.isNegative())) {
+                throw new IllegalArgumentException("shellCommandTimeout must be positive");
+            }
+            this.shellCommandTimeout = value;
+            return this;
+        }
+
+        /** Explicit new-chat concurrency limit for flow agents; null defers to the server /config quota. */
+        public Builder maxSessionConcurrency(Integer value) {
+            if (value != null && value < 0) {
+                throw new IllegalArgumentException("maxSessionConcurrency must be >= 0");
+            }
+            this.maxSessionConcurrency = value;
+            return this;
+        }
+
         public Builder skillSupplier(io.taiyiflow.sdk.core.skill.SkillSupplier value, List<String> defaultNames) {
             this.skillSupplier = value;
             this.defaultSkillNames = defaultNames == null ? List.of() : List.copyOf(defaultNames);
+            return this;
+        }
+
+        public Builder requestDefaults(io.taiyiflow.sdk.RequestDefaults value) {
+            this.requestDefaults = java.util.Objects.requireNonNull(value, "requestDefaults");
+            return this;
+        }
+
+        public Builder instructionDirectories(List<Path> value) {
+            this.instructionDirectories = value == null ? List.of()
+                    : value.stream().map(dir -> dir.toAbsolutePath().normalize()).toList();
             return this;
         }
 

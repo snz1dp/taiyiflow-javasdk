@@ -143,6 +143,28 @@ class TaskExecutorTest {
     }
 
     @Test
+    void cancelBeforeAttachCompletesCancellationWithoutInterruptingQueuedFuture() {
+        RecordingReporter reporter = new RecordingReporter();
+        AtomicInteger executions = new AtomicInteger();
+        TaskExecutor executor = new TaskExecutor((task, progress) -> {
+            executions.incrementAndGet();
+            return "done";
+        }, reporter);
+        CollaborationPlugin.TaskDispatch task = task("task-1");
+        assertTrue(executor.cancel(cancel(task, 1, "cancel-early")));
+        TaskExecutor.Reservation reservation = executor.prepare(task);
+        FutureTask<Void> future = new FutureTask<>(() -> null);
+
+        executor.attachFuture(reservation, future);
+
+        assertTrue(future.isCancelled());
+        assertEquals(TaskExecutionState.CANCELLED, executor.stateOf(task));
+        assertEquals(TaskExecutionState.CANCELLED, executor.executePrepared(reservation));
+        assertEquals(0, executions.get());
+        assertEquals(List.of("cancelled:cancel-early"), reporter.events);
+    }
+
+    @Test
     void staleAndDuplicateCancellationCannotAffectNewExecution() throws Exception {
         RecordingReporter reporter = new RecordingReporter();
         AtomicInteger executions = new AtomicInteger();
@@ -261,6 +283,89 @@ class TaskExecutorTest {
         assertTrue(executor.prepare(task("task-2")).accepted());
     }
 
+    @Test
+    void cancelBeforeDispatchIsRememberedAndSkipsHandler() {
+        RecordingReporter reporter = new RecordingReporter();
+        AtomicInteger executions = new AtomicInteger();
+        TaskExecutor executor = new TaskExecutor((task, progress) -> {
+            executions.incrementAndGet();
+            return "done";
+        }, reporter);
+        CollaborationPlugin.TaskDispatch task = task("task-1");
+
+        assertTrue(executor.cancel(cancel(task, 1, "early-cancel")));
+        TaskExecutor.Reservation reservation = executor.prepare(task);
+        assertTrue(reservation.accepted());
+        assertEquals(TaskExecutionState.CANCELLED, executor.executePrepared(reservation));
+        assertEquals(0, executions.get());
+        assertEquals(List.of("cancelled:early-cancel"), reporter.events);
+
+        CollaborationPlugin.TaskDispatch newer = task("task-2");
+        newer.version = 2;
+        assertTrue(executor.cancel(cancel(newer, 1, "stale-cancel")));
+        assertEquals(TaskExecutionState.SUCCESS, executor.execute(newer));
+        assertEquals(1, executions.get());
+    }
+
+    @Test
+    void cancelDuringRunningReportNeverStartsTheHandler() throws Exception {
+        RecordingReporter reporter = new RecordingReporter();
+        reporter.runningEntered = new CountDownLatch(1);
+        reporter.runningGate = new CountDownLatch(1);
+        AtomicInteger executions = new AtomicInteger();
+        TaskExecutor executor = new TaskExecutor((task, progress) -> {
+            executions.incrementAndGet();
+            return "done";
+        }, reporter);
+        CollaborationPlugin.TaskDispatch task = task("task-1");
+        TaskExecutor.Reservation reservation = executor.prepare(task);
+        FutureTask<TaskExecutionState> running = new FutureTask<>(() -> executor.executePrepared(reservation));
+        Thread thread = new Thread(running);
+        thread.start();
+        assertTrue(reporter.runningEntered.await(1, TimeUnit.SECONDS));
+
+        assertTrue(executor.cancel(cancel(task, 1, "cancel-1")));
+        reporter.runningGate.countDown();
+
+        assertEquals(TaskExecutionState.CANCELLED, running.get(1, TimeUnit.SECONDS));
+        assertEquals(0, executions.get());
+        assertTrue(reporter.events.contains("cancelled:cancel-1"));
+        assertFalse(reporter.events.contains("success:done"));
+    }
+
+    @Test
+    void pendingCancelRegistryEvictsOldestWithWarning() {
+        ch.qos.logback.classic.Logger logger =
+                (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(TaskExecutor.class);
+        ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> appender =
+                new ch.qos.logback.core.read.ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            RecordingReporter reporter = new RecordingReporter();
+            AtomicInteger executions = new AtomicInteger();
+            TaskExecutor executor = new TaskExecutor((task, progress) -> {
+                executions.incrementAndGet();
+                return "done";
+            }, reporter, 2);
+
+            assertTrue(executor.cancel(cancel(task("task-1"), 1, "c1")));
+            assertTrue(executor.cancel(cancel(task("task-2"), 1, "c2")));
+            assertTrue(executor.cancel(cancel(task("task-3"), 1, "c3")));
+
+            assertTrue(appender.list.stream().anyMatch(event ->
+                    event.getLevel() == ch.qos.logback.classic.Level.WARN
+                            && event.getFormattedMessage().contains("evicting oldest cancel")));
+
+            assertEquals(TaskExecutionState.SUCCESS, executor.execute(task("task-1")));
+            assertEquals(TaskExecutionState.CANCELLED, executor.execute(task("task-2")));
+            assertEquals(TaskExecutionState.CANCELLED, executor.execute(task("task-3")));
+            assertEquals(1, executions.get());
+        } finally {
+            logger.detachAppender(appender);
+        }
+    }
+
     private static CollaborationPlugin.TaskCancel cancel(
             CollaborationPlugin.TaskDispatch task, long version, String requestId) {
         CollaborationPlugin.TaskCancel cancel = new CollaborationPlugin.TaskCancel();
@@ -283,11 +388,21 @@ class TaskExecutorTest {
         private final List<String> events = new ArrayList<>();
         private String failOn = "";
         private boolean failOnce;
+        private volatile CountDownLatch runningEntered;
+        private volatile CountDownLatch runningGate;
 
         @Override
         public void running(CollaborationPlugin.TaskDispatch task, JsonNode progress) throws Exception {
             if (shouldFail("running")) {
                 throw new Exception("report unavailable");
+            }
+            CountDownLatch entered = runningEntered;
+            if (entered != null) {
+                entered.countDown();
+            }
+            CountDownLatch gate = runningGate;
+            if (gate != null && !gate.await(2, TimeUnit.SECONDS)) {
+                throw new Exception("running report gate timed out");
             }
             events.add(progress == null ? "running" : "running:" + progress.path("percent").asInt());
         }
