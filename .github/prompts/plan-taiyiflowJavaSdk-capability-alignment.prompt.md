@@ -1,7 +1,8 @@
-# Plan: TaiyiFlow Java SDK Electron 后台能力对齐实施计划（Phase AA–AG）
+# Plan: TaiyiFlow Java SDK Electron 后台能力对齐实施计划（Phase AA–AL）
 
 > 创建时间：2026-11-14。本文是默认 Flow、Flow Metadata、媒体理解、浏览器、高价值工具与 SKILL 供应机制的唯一权威实施计划，不再嵌入运行时路线图。
 > 实施状态：Phase AA–AG **SDK 侧已闭环**；Playwright Java、独立 browser 模块、flowId 缺省时自动回退默认 Flow、远程 CDP、完整 SKILL 供应及 worker/starter/示例/配置文档均已落地。真实平台、真实 Chromium/CDP、复杂 Docker 与所需 UI/平台验收仍由用户环境执行。
+> **2026-11-21 增补：Phase AH–AL**。依据 `review-taiyiflowJavaSdk-capability-gap.prompt.md`（11-19 审查 + 11-21 复核，行动清单 #1–#21）新增差距闭环阶段：首帧请求模型、执行可靠性与平台对账、恢复并行化与权限语义、工具契约与技能过滤、配置矩阵与生态配套。AA–AG 范围与状态不变。
 > 协议以 `../taiyiflow-dev` 后端代码为准，后台适用行为参照 `../taiyiflow-electron`；前置运行时能力以 `plan-taiyiflowJavaSdk-roadmap.prompt.md` 已完成的 Phase G–Z 为基础。
 > 2026-11-14 本地验收：`./mvnw test` 全仓 401 个测试通过（32 + 210 + 82 + 9 + 57 + 11），`./mvnw package -DskipTests` 八个模块打包成功；这些结果不替代真实环境联调。
 
@@ -139,8 +140,15 @@ Electron 主进程与 Web 两条实现、`taiyiflow-dev` 的 AgentService 共同
 | **Phase AE** | P2 | Schedule/session/todo/工具别名及可选 ask_user SPI | AA；复用既有 Client 与 S–Z | 无重复实现、无权限扩大、无本地权威历史、无 UI 依赖 |
 | **Phase AF** | P0 | 完整 SKILL 供应：多来源发现、首帧包与名称、摘要/全文、会话快照、技能工具、平台同步与子任务继承 | AA；复用 SkillClient 与 S–Z | 来源优先级、协议字段、会话隔离、恢复稳定、路径/ZIP 安全、默认不提权 |
 | **Phase AG** | P0 | worker/starter/Docker/示例/文档、可选依赖装配、完整测试矩阵和真实环境验收 | AA–AF 中批准实施的范围 | 默认关闭、非 root 镜像、配置生效、全量回归、真实平台/CDP/技能验收 |
+| **Phase AH** | P0 | 首帧请求模型补齐（差距报告 §2.1 九字段）、RequestDefaults 值对象、client_instructions 加载器、models/session-groups REST 前置配套、三层入口首批 | AA–AG；差距报告行动 #1/#2/#4/#11/#14 | 协议字段逐项对照、快照不漂移、指令披露边界、三层入口一致 |
+| **Phase AI** | P0 | watchdog 超时治理（长工具误判修复）、tool-calls 对账封装、notification.v1 诚信（实现或撤声明）、agent_loop.resume.v1 事件族、子任务取消契约 | 无前置（可与 AH 并行）；行动 #3/#13/#15/#16 | 媒体/子任务时长不误判、dead-letter 对账闭环、取消幂等与迟到短路、capability 与实现一致 |
+| **Phase AJ** | P1 | 多会话并行 resume + 租约锁 + 回调补偿口径、AUTO 档高危 deny 清单与 opaque 命令策略、审批超时≠DENY、PermissionRule 细粒度与浏览器独立权限 | AI 同链路协同（权限部分可独立先行）；行动 #18/#19/#11 | 并行恢复不阻塞、高危命令 deny 矩阵对照、timeout 显式结果、规则不被反向修改 |
+| **Phase AK** | P1 | 浏览器参数别名兼容、set_browser_type 显式不支持、search_files 完整 schema 别名、白板技能过滤、run_subtask 远程 detached + 模型继承 | AI 取消契约（detached 依赖）；行动 #5/#6/#8/#17 | 别名映射不放宽安全、白板技能不供应、detached 幂等对账、本地恒等待维持 |
+| **Phase AL** | P2 | 配置矩阵剩余项、/config 配额消费与新键容忍、client_type/Shell 超时硬编码解除、REST 配套补齐、Dashserv 部署文档、扫描归属/占用提示口径 | AH/AI 同批配套，可拆分；行动 #7/#9/#12/#20/#21 | 配额合并语义对照、三层配置全矩阵一致、文档不伪装支持 |
 
 实施主线为 **AA → AB → AC → AD → AG**；AE 可在 AA 后并行，AF 可在 AA 后优先于浏览器实施，二者均不得阻塞媒体主链路。若审查不批准独立 browser 模块或 Playwright，AC/AD/AG 的浏览器部分暂停，AA/AB/AE/AF 仍可独立交付。
+
+**差距闭环主线（2026-11-21 新增）：AH ∥ AI → AJ ∥ AK → AL**。AH/AI 为 P0 可立即并行启动；AJ 权限部分不依赖 AI 可先行，恢复部分与 AI 的 resume 事件族同链路联调；AK 的 detached 子任务必须待 AI 取消契约落地后启用；AL 按需求拆分、不阻塞 P0/P1。真实环境验收 1–9 项（§五）对 AH–AL 同样适用，新增字段/事件/工具的实际业务影响须在真实 Flow 上验证（后端 `extra="allow"` 不报错）。
 
 ## 四、详细实施计划
 
@@ -381,6 +389,86 @@ Electron 主进程与 Web 两条实现、`taiyiflow-dev` 的 AgentService 共同
 - AA/AB 可独立回滚媒体工具注册而不影响既有聊天；AC/AD 可通过 DISABLED 回滚且无需卸载其他模块；AE 别名可独立移除；AF 可关闭自动 SkillSupplier 而保留显式 requested_skill_names 与既有 SkillClient。
 - 配置解析失败、浏览器版本不匹配或远程凭证缺失应明确报错，不静默切换到其他 Flow、其他远程实例或有头模式。
 
+### Phase AH：首帧请求模型与项目指令（P0）
+
+> **状态（2026-11-21）：SDK 侧完成，真实验收待执行。** 实现范围：ChatRequest 新增 12 字段（含 reasoning/internet_search 复用既有字段）、RequestDefaults 值对象（fill-only-null、auto-loop 显式 false、image AUTO 不下发、relation_sessions ≤5 fail-fast）、RunContext 请求快照（retry/repeat/自动重启复用，attach/resume 不重发选项）、ClientInstructionsLoader（CLAUDE.md/AGENTS.md/copilot-instructions 及 .local.md、priority 20/25、256KB 跳过/1MB 截断、相对路径披露、默认关闭）、ModelsClient/SessionGroupClient、TaiyiAgent.Builder + worker.yml request/instruction-directories + starter taiyiflow.request/instructions 三层入口。新增/更新单测覆盖协议对照、快照不漂移、披露边界与三层一致性；全仓测试通过。偏差说明：knowledge-scopes/knowledge-docs 三层配置入口已于 AL 补齐（AH 交付时仅 RequestDefaults.builder() 编程入口）；真实 Flow 上字段行为验证（后端 extra="allow"）待执行。
+
+**目标**：补齐 ChatRequest 缺失的能力字段，使数字人不再静默丧失项目指令、自动续跑、图片生成、模型选择、会话分组、关联会话与 AgentApp 能力；建立请求默认值对象与三层配置入口首批。依据差距报告 §2.1/§8.1，行动 #1/#2/#4/#11/#14。
+
+**实现**：
+
+1. ChatRequest 新增九字段（序列化逐项对照后端 schemas.py:1640-1958 与 Electron chat-core.js:689-736）：`client_instructions`、`relation_sessions`（上限 5、空列表不序列化）、`agent_auto_loop_enabled`/`agent_auto_loop_max_rounds`、`image_generation_enabled`、`model`（**序列化名必须是 model**，Pydantic alias model_key 仅服务端兼容）、`group_id`、`agent_app_id`（本地应用语义传 null 走 instructions）、`client_context_dir`。`input_type/output_type` 会话默认 `chat`/`chat`（决策点 14 已定案，Builder 可覆盖，真实环境验证提示词组装差异后生效）。§2.2 字段（memory 双开关、agent_app_owner_id、current_context_dir、runtime_strategy、command_execution_target、max_iterations、agent_continue_windows、agent_inputs、master_flow_id、output_component、principal_id、actor_principal_id）按需暴露，不默认发送；**服务端注入字段 client_ip/user_identity_info 勿传**。协议对照单测同步更新。
+2. 新增 `RequestDefaults` 不可变值对象：Builder 持有请求级默认（requestType/reasoning/model/internetSearch/knowledgeScopes/imageGeneration AUTO|ON|OFF/autoLoop/groupId/agentApp），`AgentSession.chat()` 逐次覆盖；attach/resume 沿用 RunContext 快照，不因配置热更漂移（与 SKILL 快照同一原则）。`relation_sessions` 为会话级 API，不进 Builder 全局默认。
+3. `client_instructions` 加载器：`Builder.instructions(dirs...)` 显式目录开关，**默认关闭**；AGENTS.md/CLAUDE.md 分层加载 + merged 文本限长；不默认扫描 home；路径披露沿用 §二.10 脱敏边界。auto-loop **默认关闭**、按任务显式开启（决策点 10 已定案，副作用约束见差距报告 §六.3）。
+4. 前置配套 REST：`GET /agents/flows/{flow}/models`（model 字段可用范围校验）、`/agents/session-groups` 族（group_id 管理面），与字段同批交付，避免"字段有了但配套查询没有"。
+5. 三层入口首批：Builder / worker.yml（execution.default-request-type、model-key、auto-loop.*、instructions.*、group-id、agent-app 等）/ starter 属性同批暴露，默认值与安全语义一致；安全相关项默认取更严格一侧。WorkerTaskHandler 派单参数透传 relation_sessions/group_id/model。
+
+**验收重点**：协议字段逐项对照单测；RequestDefaults 快照不漂移测试；instructions 披露边界（显式目录、限长、不扫 home）测试；三层入口一致性对照测试；真实 Flow 上验证字段实际生效（后端 extra="allow" 不报错，须以行为验证）。
+
+### Phase AI：执行可靠性与平台对账（P0）
+
+> **状态（2026-11-21）：SDK 侧完成，真实验收待执行。** 实现范围：① watchdog 三层可配——`streamIdleTimeout` 默认 1200s（0 禁用）、`toolExecutionTimeout` 缺省自动推导（注册工具最大时长+60s 且 ≥31min，低于下限抬升），Builder / worker.yml `execution.*` / starter `taiyiflow.*` 与 `taiyiflow.worker.*` 默认值一致；② ToolCallRecordClient（list/byCallId 分页，run_id/via_client/order_by 过滤）+ PlatformResultReconciler 三裁决（RECEIVED 删除 / DISCARD_PAUSED 丢弃 / UNKNOWN 保留人工对账），客户端死信与检查点死信按平台权威清理，只分类不重放；③ notification.v1 最小 WS 事件集（deliver/ack/read/fetch_recent/recent，投递自动 ack）+ NotificationClient REST 兜底（recent limit 1–100 / markRead）；④ agent_loop.resume.v1 capability 声明 + resume_requested→resume_notification_ack（accepted 仅首个流事件后回执，already_running/ignored_stale/ignored_stopped），checkpoint_state/origin_available 观察回调，DigitalWorker 虚拟线程处理链路（AgentSessionTaskHandler.resumeAgentLoop），CLI 隧道事件族（persistence_activate/persistence_active/agent_loop.event）显式排除并记录于文档；⑤ 子任务取消契约——pause 受理后才中止在途工具、迟到结果按代次+取消标记+状态短路不回传、resume/attach/restart 单点重置取消，TaskExecutor pending-cancel 登记（有界 LRU）+竞态三查（启动入口/running 回报后开流前/success 回报前），SessionControl 注册同步重放待定取消 + 200ms 有界 await，SubtaskOrchestrator 创建窗口后再查 + 轮询线程可被取消立即中断；远程等待子任务禁止发起方本地 PATCH 终态。新增/更新单测覆盖时长比例缩放、死信对账闭环、取消幂等/迟到短路/竞态守卫、capability 与入站处理一致性、watchdog 三层一致；全仓测试通过。文档同步：agent-and-session / execution-control / collaboration / protocol / digital-worker / deployment / spring-boot / docs/public/worker.yml。偏差说明：真实平台通知投递、跨实例 resume 与媒体 29/59min、子任务 1h 真实时长验收待执行。
+
+**目标**：修复 watchdog 对合法长工具的误判断流；打通 tool-calls 平台对账最后一环；消除 notification.v1 虚标；接线子任务取消契约。依据差距报告 §8.2/§9.2#1/§三/§4.1，行动 #3/#13/#15/#16。
+
+**实现**：
+
+1. **watchdog 超时治理**：`streamIdleTimeout`（0=禁用）与 `toolExecutionTimeout` 三层可配，解除 AgentSessionImpl.java:92-93 硬编码（90s/15min）。工具期超时须 ≥ 注册工具最大合法时长（媒体理解 29/59min、子任务同步等待 1h），复刻 Electron"链超时 ≥ 工具超时+60s 且 ≥31min"原则（runtime-config.js:216-232）；默认 idle 1200s 对齐 Electron、工具期按工具注册表自动推导（决策点 11 已定案）。保留既有工具期保护机制（StreamIdleWatchdog 切换上限）与代次守卫，只修上限与可配性。
+2. **ToolCallRecordClient**：封装 `GET /agents/flows/{flow}/sessions/{sid}/messages/{mid}/tool-calls`（分页，run_id/via_client/order_by 过滤）。Outbox 补偿失败进入 dead-letter 与重启对账时，按 run_id+via_client 查询平台已收结果，再决定补报或标记完成；状态未知不重放（AGENTS.md 约束 8/10）。CheckpointToolResultsAdapter 本地比对之上叠加平台权威查询。
+3. **notification.v1 诚信**：实现 `notification.deliver/ack/read` 最小 WS 事件集 + `GET /agents/client/notifications/recent`、`POST .../{id}/read` REST 兜底（重启后拉取未读）（决策点 12 已定案：最小实现 + REST 兜底，不走撤声明路径）。禁止"声明而不处理"的中间态存续。
+4. **agent_loop.resume.v1**：声明 capability 并实现 `resume_requested→resume_notification_ack` 事件族；`checkpoint_state/origin_available` 作为跨实例接管时机依据按需处理。`agent_loop.persistence_*/agent_loop.event` CLI 隧道事件族显式排除并记录。
+5. **子任务取消契约**（对齐 Electron subtask-manager/subtask-stream-store 链路）：远程取消走 `POST /agents/client/collaborations/{id}/cancel` 服务端受理 + request_id 幂等，**禁止本地 PATCH 终态**（会使服务端受理幂等跳过）；在途工具登记 call_id、取消经 cancelTool 中止；abort/父会话暂停后迟到结果短路不回传；executionId=call_id 透传（含 built_in 回退）；建流准备窗口入口+监听注册后同步检查、本地启动前/running 更新后/success 前三查取消的竞态守卫；轮询可被 abort 立即中断。
+
+**验收重点**：媒体 29/59min 与子任务 1h 时长比例缩放测试不误判（真实时长待环境验收）；dead-letter→平台查询→补报/完成闭环测试；取消幂等、迟到短路、竞态守卫测试；capability 声明与入站处理一致性测试；watchdog 配置三层一致。
+
+### Phase AJ：恢复并行化与权限语义（P1）
+
+> **状态（2026-11-21）：SDK 侧完成，真实验收待执行。** 实现范围：① 恢复并行化——`ResumeLeaseRegistry` per-checkpoint 进程内租约（键 sessionId/checkpointId、默认 5min、原子获取/持有者释放/过期接管，单实例容器下等价 Electron Web Locks），三条检查点恢复路径（AUTO 对账、resume(checkpoint)、resume() 发现）统一受保护；RESUMING 建流 60s 无首个流事件按可恢复错误退避重试（对照 RESUME_STREAM_TIMEOUT_MS）；DigitalWorker connection.ready 先 flushReports 再 `recoverDisconnectedSessions` 单飞并行恢复轮（每会话独立虚拟线程、单会话失败计 pending 不中断整轮，MANUAL 下同样生效）；回调补偿口径 400 确定性拒绝不重试、tool_call_paused 丢弃（ClientToolResultAdapter 既有语义补测，CheckpointToolResultsAdapter.failed 分类补测）。② AUTO 档高危守卫——ShellCommandAnalysis 候选命令匹配 + 高危 deny/allow 清单对照 security.js（shutdown/reboot/killall/sudo/halt/poweroff/mkfs*、dd of=/dev/、rm 根/家/未展开变量、fork bomb、反向 shell、敏感文件、下载落盘、eval/env -S 嵌套、深层 shell -c 剥离）；opaque 命令显式决策（AUTO 仍过守卫，其余 ASK 附原因），显式 deny/ask 先于 AUTO 豁免。③ 审批超时语义——ToolDispatcher 超时返回显式 timeout 错误文案（工具名+等待时长+换方案提示，≠DENY），0=永不超时维持，排队失效项清队。④ PermissionGate 细粒度——PermissionSettings 不可变（policy/rules/writeConfirmation/browserPermissionMode/categoryPolicies），PermissionRule.of 归一（非法 action→ASK、空选择器丢弃、deny>ask>allow），WriteConfirmation/BrowserPermissionMode/ToolCategory/PermissionPolicy 配置解析器取更严格一侧；决策顺序对照 evaluateApproval（浏览器/计算机分支优先→类别覆盖→写确认→显式 deny/ask→opaque→显式 allow→AUTO 守卫→非写 ALLOW→ASK）；PermissionHook 新增 PermissionResult(reason)+default evaluate 向后兼容，DENY reason 回传模型；WorkerApprovalHook 以 gate 为主评估器、仅 ASK 进审批通道；TaiyiAgent/DigitalWorker Builder.permissionSettings + worker.yml permission:/tools.browser.permission-mode + starter taiyiflow.permission.*/taiyiflow.worker.permission.* 三层接线，默认值一致（READONLY/CONFIRM/ASK）。已记录偏差：无未分类→confirm 桶（按 isMutating）、守卫恒生效（无沙盒关闭豁免）、不移植 skill_fetch 审查、READONLY 浏览器写 DENY 更严格、OS 沙盒不伪装支持。规则仅配置层可改，技能正文/模型参数不得反向修改（不可变 settings + 配置来源单一）。新增/更新单测：PermissionGateTest 36 项（三档兼容/规则优先级/opaque/写确认/浏览器模式/类别覆盖/防篡改/dispatcher reason）、ResumeLeaseRegistryTest 6 项、AgentSessionRecoveryTest 建流超时重试与租约占用、AgentSessionTaskHandlerTest 重连恢复轮并行与失败隔离、ReportOutboxTest 检查点失败分类、WorkerConfigLoaderTest/AutoConfigurationTest/BuilderTest 三层一致；core 348/worker 71/collaboration 40/plugins 83 全绿。文档同步：hooks / agent-and-session / execution-control / digital-worker / deployment / spring-boot / docs/public/worker.yml。偏差说明：真实平台高危命令矩阵与跨实例租约/并行恢复验收待执行。
+
+**目标**：对齐 Electron 断网恢复并行化与回调补偿口径；补齐 AUTO 档高危守卫与 opaque 命令策略；审批超时语义与细粒度权限规则。依据差距报告 §十一.3/§8.3，行动 #18/#19/#11。
+
+**实现**：
+
+1. **恢复并行化**：多会话并行 resume（单会话异常计 pending 不中断整轮）+ per-checkpoint 租约锁 + 有界退避 + 建流超时；resume 复用原 run_id+checkpoint_id/version。无新协议字段，纯客户端行为；与既有 AUTO attach→resume→start 策略和"状态未知不重放"约束联合审查，不放大副作用重放。回调补偿队列口径：400 确定性拒绝不重试、tool_call_paused 丢弃。
+2. **AUTO 档高危守卫**：高危 deny 清单对照 Electron security.js（shutdown/reboot/killall/sudo/halt/poweroff/mkfs*、dd of=/dev/、rm 根/家目录/含未展开变量、fork bomb、反向 shell、敏感文件、下载落盘、破坏性操作、eval 与 env -S 嵌套、深层 shell -c 剥离）；opaque（静态分析无法完全解析：命令替换/变量展开/未闭合引号/heredoc/超深度）命令策略显式决策；**显式 deny/ask 规则先于 auto 豁免**。仅命令白名单不足以等价 Electron AUTO 安全语义。
+3. **审批超时语义**：超时返回显式 `timeout` 结果（≠DENY，工具回错误结果提示模型换方案）；支持 0=永不超时；排队失效项清队。permissionTimeout 默认 300s 维持。
+4. **PermissionRule 细粒度**：按工具类别（shell/file/browser/skill/schedule）独立 AUTO/CONFIRM/DENY；`browser.permission-mode` 独立于全局；`permission.write-confirmation: CONFIRM|DIRECT`；`permission.rules[]`（工具名/模式→ALLOW/DENY/ASK），PermissionHook 链承载；规则不得被技能正文或模型参数反向修改。保留 AUTO/CONFIRM/READONLY 三档兼容。OS 沙盒不伪装支持，文档明确差异。
+
+**验收重点**：并行恢复与租约锁测试；高危命令 deny 矩阵逐项对照；opaque 判定与豁免顺序测试；timeout≠DENY 测试；三层权限配置一致性；规则防篡改测试。
+
+### Phase AK：工具契约兼容与技能过滤（P1）
+
+> **状态（2026-11-21）：SDK 侧完成，真实验收待执行。** 实现范围：① 浏览器参数别名——type append/press_enter↔clear/submit、select_option text↔label、read_text max_chars↔max_characters、screenshot input_value↔input，`path` 显式拒绝并提示（会话 workspace 收紧维持）；兼容层只做参数名映射，不放宽 URL/网络/execute_js 安全策略。② set_browser_type 返回明确"不支持（Chromium-only）"结果，替代泛化 No handler。③ search_files 完整 schema 别名——纯 Java 对齐 file-tools.js：pattern 必填、caseSensitive 默认 true、isRegexp 默认 false（字面量）、includeHidden 默认 false、outputMode content/files_with_matches/count、offset 分页、maxResults 默认与上限 200、has_more/total_matches 停数语义、SKIP_DIRS/隐藏文件/二进制扩展名+512 字节 NUL 探测、不跟随符号链接、自研 glob 翻译（`**/` 零目录匹配+花括号展开，PathMatcher 不等价）；已记录偏差：不解析 .gitignore。④ 白板技能过滤——SkillSupplier.visible() whiteboard 类（metadata.tool_category 优先）要求至少一个非 whiteboard_open 的 whiteboard_* 工具（对齐 filterWhiteboardSkillsByOpenState 关闭态只注入入口工具的语义），availableTools 为 null 不过滤，browser/chrome 过滤与 elevated-risk 拒绝维持。⑤ run_subtask 远程 detached（决策点 16）——wait_for_completion=false 且非本机目标时创建平台任务后立即返回（detached:true+平台当前状态原样+child/source 标识，不轮询终态，创建响应丢失仍走幂等对账）；detached 不登记父执行取消链，父取消/SDK 关闭不取消其平台任务；子项覆盖顶层（仅显式布尔 false 关闭等待）；本地恒等待维持；批量统计 detached 计为已受理成功；command_payload 携带 wait_for_completion；能力快照新增 model 继承（ChatRequest.model→features.model→子任务首帧 setModel），子任务体恒不传 execution_mode（对照单测断言）。新增/更新单测：SearchPluginTest 21 项、SkillSupplierTest 7 项、SubtaskOrchestratorTest 15 项（detached 立即返回/对账/本地恒等待/父取消不达/批量受理/子项覆盖/model 继承与 execution_mode 不变量）、BrowserRuntimeTest 别名与 path 拒绝；core 356/worker 71/collaboration 40/plugins 95/starter 17 全绿。文档同步：plugins / getting-started / index / skills / digital-worker / execution-control。偏差说明：真实 Electron schema 参数生成对照、白板开关联动与 detached 平台任务续跑/对账验收待执行。
+
+**目标**：消除同一 Flow 下模型按 Electron schema 生成参数在 Java 侧落空的问题；修复白板技能供应缺口；启用远程 detached 子任务。依据差距报告 §4.1/§4.2，行动 #5/#6/#8/#17。
+
+**实现**：
+
+1. **浏览器参数别名**：`type` 兼容 append/press_enter↔clear/submit；`select_option` 兼容 text↔label；`read_text` 兼容 max_chars↔max_characters；`screenshot` 兼容 input_value↔input，`path` **显式拒绝并提示**（会话 workspace 收紧维持，不静默忽略）。兼容层只做参数名映射，不放宽 URL/网络/execute_js 安全策略。
+2. **set_browser_type**：返回明确"不支持（Chromium-only）"结果，替代泛化 "No handler for tool"（PluginManager.java:81），避免模型反复重试。
+3. **search_files 别名**：完整 schema 对齐 file-tools.js（pattern 必填，glob/includePatterns/excludePatterns/caseSensitive/isRegexp/outputMode/offset/maxResults≤200，返回 has_more/total_matches），复用 SearchPlugin handler 与权限。
+4. **白板技能过滤**：SkillSupplier.visible() 按 tool_category↔availableTools 联动过滤（whiteboard 类技能在无白板工具时不供应，对齐 Electron filterWhiteboardSkillsByOpenState 语义）；维持 browser/chrome 过滤与 elevated-risk 拒绝。
+5. **run_subtask 远程 detached**：`wait_for_completion=false` 且目标为远程时创建协同任务后立即返回（决策点 16 已定案：AI 取消契约落地后启用；依托平台幂等/对账，不本地伪造）；**本地串行恒等待语义维持**（与 Electron 一致，非缺陷）；子任务继承所选模型（features.model）；子任务体恒不传 execution_mode。
+
+**验收重点**：Electron schema 参数别名落地对照测试；path 显式拒绝测试；白板技能过滤测试（无白板工具不供应正文）；detached 幂等/对账/取消测试；本地等待语义回归。
+
+### Phase AL：配置矩阵收尾与生态配套（P2）
+
+> **状态（2026-11-21）：SDK 侧完成，真实验收待执行。** 实现范围：① AL-1 配置矩阵剩余——knowledge-scopes/knowledge-docs 三层入口补齐（RequestDefaults.builder()/worker.yml request.knowledge-*/starter taiyiflow.request.knowledge-* 与 worker.request.*）；output_language 经后端源码核实**无消费点**，不设字段（如需透传走 tweaks，文档化）；记忆双开关确认服务端消费点存在（schemas.py + components/helpers/memory.py），维持 fill-only-null、缺省不下发由服务端默认。② AL-2 /config 配额消费——ServiceConfig 访问器：max_parallelism_subtask（缺失→本地 4、0→禁用 run_subtask 供应、其余取 min 且上限 32）、client_max_session_concurrency（缺省 3、显式 0 保留）、agent_auto_loop_max_rounds（开启且未显式指定时回落）、max_input_tokens（服务端权威仅访问器不下发）、ontology（非布尔容忍 false）；会话并发守卫仅在 chat() 新执行入口计数（CONNECTING/STREAMING/TOOL_CALLING/PAUSING/PAUSED/RESUMING/RESTARTING，DISCONNECTED 不算），达上限抛 IllegalStateException，resume/attach/retry/repeat 豁免；**/config 拉取失败回落 -1 不限（Electron config 缺失回落默认 3 收紧，Java 选择不阻断后台任务，文档化偏差）**；FlowMetadata features graph_search/ontology 解析容忍，未知键不报错。③ AL-3 硬编码解除——client_type 默认 device + Builder.clientType/worker.yml request.client-type/starter 三层可配（决策点 13），单次请求显式值优先且跨 resume/retry 持久，服务端按 client_type 合并内置技能的影响已文档化（协同 WS client-type=text 有意不变）；Shell 命令超时三层（ShellPlugin.register/BuiltinPlugins.registerAll 暴露 timeout + worker.yml tools.shell.command-timeout + starter plugins.shell-command-timeout/worker.shell-command-timeout，缺省插件 30s）；subtask 装配暴露（Builder subtaskMaxTasks 16/subtaskMaxParallelism 4/subtaskTimeout 1h + yml tools.subtask.* + starter worker.subtask-*）。④ AL-4 REST 配套——六个薄客户端：IntentionClient（run/message 意图，404→null、403 抛出）、ClientDirectoryClient（online-desktops/principals，派发前过滤 can_receive_task=false 已文档化）、QuotaCreditClient（quotas usage/check、credits balance/check；4003 是 WS 关闭码非 HTTP）、PlatformProbeClient（/health 与 /api/health_check 免鉴权 + /api/v1/version）、AgentAppClient/AgentPluginClient（只读目录）；TaiyiAgent +6 访问器、DigitalWorker +3；release.push 收而不报（协同默认分支 debug 日志，容器升级不适用已文档化）；knowledge retry/parse-record 不封装（服务账号恒 403 fail-closed、Milvus 门控，备选已文档化）。⑤ AL-5——Dashserv 网关身份部署文档（X-App-Id 为 consumer 调用身份 code 非应用 code，enabled+app_code 校验与四级服务账号校验、XEAI 禁用即 401、consumer 缓存 60s/请求超时 5s、网关不可达错误传播非 401、gateway_dashserv_* 五项配置、credentialHeaders 直连说明）；扫描 edit 补报按会话快照归属过滤（对齐 hasFileSnapshot：shell 声明 + write_file/file_edit 成功写入经共享 WorkspaceAudit 登记快照，按会话分桶 10000 FIFO，create/delete 不受过滤，前台与后台补扫两通道同口径）；同工作区占用非阻断 WARN（chat 入口、自动续跑/恢复不提示，无协议变更）。⑥ AL-6 文档同步——deployment/spring-boot（修正 knowledge「仅编程入口」过时句）/protocol（client_type 行、/config 配额键、REST 表 +6 客户端）/execution-control（并发配额与 auto-loop 轮次节）/digital-worker（Builder 表 +6 行）/agent-and-session（Builder 表 +4 行、RequestDefaults 语义段）/plugins + deploy/worker.yml 与 docs/public/worker.yml。新增/更新单测：EcosystemClientsTest 6 项（后端契约逐项对照）、AgentSessionConcurrencyQuotaTest 5 项（服务端配额/显式覆盖/0 阻断/失败不限/占用警告/auto-loop 回落）、ShellPluginTest 归属过滤与跨插件快照、WorkspaceAuditTest 会话分桶、三层配置矩阵测试（worker.yml/starter/Builder）；全仓测试通过：core 373/worker 76/plugins 99/starter 19/collaboration 40/browser 13，共 620 项 0 失败；`./mvnw package` 全模块打包通过。偏差说明：-1 不限偏差、output_language 不设字段、knowledge 备选未封装、release.push 收而不报均已文档化；真实平台配额/积分预检、Dashserv 网关 401 矩阵与探针验收待执行。
+
+**目标**：完成 §8 配置矩阵剩余项与硬编码解除，补齐生态配套 REST 与部署文档。依据差距报告 §2.2/§8/§9.2/§十一.2，行动 #7/#9/#12/#20/#21。
+
+**实现**：
+
+1. 配置矩阵剩余：defaultKnowledgeScopes、output_language 透传（确认服务端消费点后定字段）、长期记忆开关（**先确认服务端消费语义**，Electron 未随首帧发送，不复刻不存在的行为）、§2.2 剩余字段按需暴露。
+2. **/config 配额消费**：max_parallelism_subtask 服务端收紧合并（**0=禁用 run_subtask 工具供应**）、client_max_session_concurrency、agent_auto_loop_max_rounds、max_input_tokens；`ontology` 新键与 FlowMetadata features `graph_search`/`ontology` 解析容忍（服务端 p_graph_*/p_ontology_* 内置工具为服务端执行，不新增客户端义务；服务账号 fail-closed 属预期）。
+3. **硬编码解除**：CLIENT_TYPE 维持 device 默认 + Builder/yml/starter 可配置 + 文档化服务端技能合并影响（决策点 13 已定案）；Shell 命令超时三层打通（BuiltinPlugins.register 暴露 + worker.yml + starter）；subtask timeout/max-parallelism 装配暴露。
+4. REST 配套：intention、online-desktops/principals（发起方形态）、quotas/credits 配额预检（避免 4003 后才发现耗尽）、health_check/version（容器探针）、agent-apps/plugins 按需；`release.push` 收而不报显式文档化为容器升级不适用；knowledge retry/parse-record 仅数字人承担知识运维时备选。
+5. **Dashserv 网关身份部署文档**：经网关接入的 DigitalWorker，X-App-Id 必须是已注册 Dashserv consumer 且映射到启用应用（gateway_dashserv_* 五项配置），否则 401；XEAI 禁用即 401；认证头本身无变化（X-Credential-Username/Userid、X-App-Id）。
+6. 口径项：扫描 edit 补报按会话快照归属过滤（排除外部进程改动，对齐 hasFileSnapshot 口径，若 Phase X 补扫存在）；同工作区占用非阻断日志警告（纯本地状态，无协议变更）。
+
+**验收重点**：配额合并语义对照（含 0=禁用）；三层配置全矩阵一致性；新键容忍不报错；部署文档审查；不预留假配置开关（computer/chrome_session/whiteboard/桌面 prefs 显式标注后台不适用）。
+
 ## 五、平台配套、真实验收与责任边界
 
 | 工作项 | 当前结论 | SDK/使用方责任 |
@@ -431,9 +519,19 @@ Electron 主进程与 Web 两条实现、`taiyiflow-dev` 的 AgentService 共同
 4. 是否接受远程浏览器只支持**标准 REMOTE_CDP**，不迁移 Electron Native Messaging/Chrome 扩展。
 5. 是否接受内网默认阻断、allowlist 开放，以及 execute_js/下载/文件选择器默认关闭的安全基线。
 6. Phase AE 是否全部保留，或优先只交付 Schedule、session_context 和名称别名；ask_user 可独立后置。
-7. 是否接受 Java 按后端完整语义用 `document_understanding` 同步门控 `document_unstructured`；Electron 当前 features 过滤器只覆盖图片/音频/视频，若要求完全复刻则文档工具可保持仅注册、不按 feature 过滤。
+7. 是否接受 Java 按后端完整语义用 `document_understanding` 同步门控 `document_unstructured`；Electron 当前 features 过滤器只覆盖图片/音频/视频，若要求完全复刻则文档工具可保持仅注册、不按 feature 过滤。**已定案（2026-11-21，随决策点 15）：接受后端完整语义门控。**
 8. 是否接受 SKILL 沿用 `.snz1dp/skills` 与可选 `~/.agents/skills` 兼容来源、bundled classpath 资源，并默认省略首帧中的本机绝对路径；若必须逐字段复刻 Electron 的 path/root_dir，需要单独批准路径披露范围。
 9. 是否接受平台技能同步默认 DISABLED、elevated-risk 默认拒绝，DigitalWorker 不自动安装/更新；如需 AUTO，应仅对明确白名单和非 elevated 技能开放。
+
+**2026-11-21 差距闭环新增决策点（Phase AH–AL，已于 2026-11-21 逐项确认全部定案，采纳建议默认值）：**
+
+10. **auto-loop 默认关闭**、按任务显式开启（数字人副作用约束，差距报告 §六.3；Electron agent 模式默认开启，Java 取更严格一侧）。**已定案：默认关闭，派单参数/会话级显式开启。**
+11. **watchdog 默认值**：idle 1200s（0=禁用，对齐 Electron）、工具期超时按注册工具最大时长+60s 且 ≥31min 自动推导（媒体 29/59min、子任务 1h 不被误判）。**已定案：1200s + 工具注册表自动推导。**
+12. **notification.v1 处置**：实现最小 WS 事件集（deliver/ack/read）+ REST recent/read 兜底 vs 先撤 capability 声明后续再实现。**已定案：最小实现 + REST 兜底（AI 阶段）；禁止"声明而不处理"中间态存续。**
+13. **client_type**：维持 `device` 默认 + Builder 可配置 + 文档化对服务端内置技能合并的影响 vs 改 `desktop`。**已定案：device 默认 + 三层可配置 + 文档化技能合并影响（AL 阶段），显式定案替代隐式硬编码。**
+14. **input_type/output_type 会话默认**：`chat`/`chat`（对齐 Electron）vs 维持后端默认 `any`。**已定案：chat/chat，Builder 可覆盖；真实环境验证提示词组装差异后生效。**
+15. **document_understanding 门控（决策点 7 的新证据）**：Electron 已隐藏「文档工具」设置卡（19044fba，SystemSettingDialog.vue:988），服务端文档解析类型配置入口下线。**已定案：维持 Java 按后端完整语义门控文档工具；决策点 7 据此一并定案，Electron 只过滤图/音/视的行为不再作为对齐目标。**
+16. **detached 远程子任务启用时机**：AK 阶段、AI 取消契约落地后启用；本地串行恒等待语义维持（与 Electron 一致）。**已定案：AI 取消契约落地后于 AK 启用远程 detached，本地恒等待维持。**
 
 | 阶段 | 当前状态 | 说明 |
 |------|----------|------|
@@ -444,5 +542,58 @@ Electron 主进程与 Web 两条实现、`taiyiflow-dev` 的 AgentService 共同
 | Phase AE | SDK 侧完成 | Schedule/session/todo/别名与可选 ask_user SPI 已落地 |
 | Phase AF | SDK 侧完成 | SKILL 发现、首帧供应、恢复快照、按需加载、管理同步与安全边界已落地 |
 | Phase AG | SDK 侧完成，真实验收待执行 | worker/starter 装配、可选依赖隔离、Docker、12 个示例与文档已落地；全仓测试/打包通过 |
+| Phase AH | SDK 侧完成，真实验收待执行 | ChatRequest 12 字段补齐并有后端字符串对照单测；RequestDefaults（决策点 10/14：chat/chat、auto-loop 显式 false、image AUTO）、retry/repeat/自动重启快照复用、client_instructions 加载器（显式目录、256KB/1MB 限长、相对路径披露）、ModelsClient/SessionGroupClient、Builder/worker.yml/starter 三层入口与文档已落地；全仓测试通过。knowledge-scopes/knowledge-docs 三层配置入口已于 AL 补齐；真实 Flow 行为验证待执行 |
+| Phase AI | SDK 侧完成，真实验收待执行 | watchdog 三层可配（决策点 11：idle 1200s、工具期自动推导 ≥31min）、ToolCallRecordClient+PlatformResultReconciler 死信对账闭环、notification.v1 最小实现+REST 兜底（决策点 12）、agent_loop.resume.v1 事件族与 worker 恢复链路（CLI 隧道显式排除）、子任务取消契约（pending-cancel 登记、竞态三查、迟到结果短路、轮询可中断、禁发起方 PATCH 终态）；单测与八处文档已同步，全仓测试通过。真实平台通知/跨实例恢复/长时长工具验收待执行 |
+| Phase AJ | SDK 侧完成，真实验收待执行 | 恢复并行化（per-checkpoint 租约锁、60s 建流超时、connection.ready 先补传再单飞并行恢复轮、MANUAL 同样生效）、回调补偿口径（400 不重试/tool_call_paused 丢弃）、AUTO 高危守卫与 opaque 命令策略（显式 deny/ask 先于豁免）、审批超时显式 timeout≠DENY、PermissionGate 细粒度（规则/类别/写确认/浏览器模式，PermissionResult reason 回传，三层配置一致，规则防篡改，OS 沙盒差异文档化）；单测与七处文档已同步，core/worker/collaboration/plugins 全绿。真实高危命令矩阵与跨实例恢复验收待执行 |
+| Phase AK | SDK 侧完成，真实验收待执行 | 浏览器参数别名与 path 显式拒绝、set_browser_type 显式不支持、search_files 完整契约（纯 Java，不解析 .gitignore 偏差已记录）、白板技能按非入口工具过滤、run_subtask 远程 detached+model 继承（本地恒等待维持，execution_mode 恒不传）；单测与六处文档已同步，core/worker/collaboration/plugins/starter 全绿。真实 schema 对照与 detached 平台续跑验收待执行 |
+| Phase AL | SDK 侧完成，真实验收待执行 | knowledge 三层入口、output_language 无消费点不设字段、记忆开关 fill-only-null 确认；/config 配额消费（subtask 收紧/0 禁用、会话并发守卫、auto-loop 轮次回落、max_input_tokens 服务端权威、ontology/features 容忍，-1 不限偏差文档化）；client_type device 默认三层可配（决策点 13）、Shell 超时三层、subtask 装配；六个生态 REST 客户端（intention/目录/配额积分/探针/应用插件目录）、release.push 收而不报、knowledge 备选不封装；Dashserv 网关身份部署文档、扫描 edit 归属过滤（hasFileSnapshot 口径）、同工作区占用非阻断警告；单测与七处文档已同步，五模块全绿。真实配额预检/网关 401 矩阵/探针验收待执行 |
 
-2026-11-14 已按用户指令完成实施，不再处于方案待批准状态。本地 mock、HTTP/SSE 集成和单元测试只证明 SDK 侧行为；第五节真实环境验收第 1–9 项仍是发布前待办，不得以全仓测试或打包成功替代。
+2026-11-14 已按用户指令完成 AA–AG 实施，不再处于方案待批准状态。本地 mock、HTTP/SSE 集成和单元测试只证明 SDK 侧行为；第五节真实环境验收第 1–9 项仍是发布前待办，不得以全仓测试或打包成功替代。
+
+2026-11-21 依据 `review-taiyiflowJavaSdk-capability-gap.prompt.md`（§十一 复核记录）新增 Phase AH–AL，覆盖差距报告行动清单 #1–#21；复核确认后端 Agent 协议面自 11-19 后稳定，新增缺口以 Electron 行为演进（子任务取消契约、并行 resume、审批/高危守卫语义）与 Java 侧查实缺陷（watchdog 超时冲突、白板技能未过滤）为主。AH、AI、AJ、AK、AL 已于 2026-11-21 SDK 侧完成（真实验收待执行）；决策点 10–16 已于 2026-11-21 逐项确认全部定案（采纳建议默认值，旧决策点 7 随 15 定案），引用处已全文同步；真实环境验收对 AH–AL 同样适用。
+
+## 十二、实施缺陷审查与修复记录（2026-11-21）
+
+AH–AL SDK 侧完成后，按用户指令对全部未提交改动做**实现缺陷核查**（区别于 §十一 的协议差距审查），查实约 26 项（3 高 / 11 中 / 约 12 低），已全部修复并补回归测试。全仓六模块测试连续两轮全绿（collaboration 42 / core 402 / plugins 101 / browser 11 / worker 79 / starter 19，共 654）。本节仍属 SDK 侧行为证明，第五节真实环境验收不被替代。
+
+### 12.1 高危（3）
+
+- **H1 租约未贯穿执行期**：`ResumeLeaseRegistry` per-checkpoint 租约改为覆盖整个恢复执行期，流活动续租，终态/暂停/断连转换释放；专用叶子 `leaseLock`（不在 executionLock 获取内嵌套、不跨 I/O 持有）。`AgentSessionImpl` 三处 resume 调用点不再立即释放。
+- **H2 恢复通知 dedup 吞重投**：`CollaborationPlugin.handleResumeRequested` 改为原子认领（`seenResumeNotifications.add`）+ handler 异常时移除认领，使平台重投不被吞没；下游租约与 per-key 闸保证重试安全。
+- **H3 AUTO 高危守卫绕过**：`DangerousCommandGuard` 补齐附着重定向、`rm` 无尾斜杠、`eval` 嵌套等 6 类绕过。**实证：Electron `security.js` 共享全部 6 类缺口**，故本修复是刻意严于 Electron 的加固（非对齐），数字人副作用约束下取更严格一侧。
+
+### 12.2 中危（11）
+
+- M1 并发原子预留、M2 PAUSED 计数、M3 clientType 快照（retry/repeat/restart 复用首帧快照）。
+- M4 JDK WebSocket `sendText` 串行化（`sendLock` + `join`，杜绝重叠发送 `IllegalStateException`）。
+- M5a `connection.ready` 重 handler 移出监听线程（taskExecutor 异步，轻量 WS 补传仍同步）；M5b `recover()` 阻塞 REST 探针移出 executionLock（三段式：守卫→锁外探针→锁内复核重守卫，probeError 在锁内裁决）。
+- M7 resume accepted-ack 仅在首个流事件后发出（`AtomicReference` ack + CAS，去除每次 resume 新建 hook 的泄漏）。
+- M8 detached 创建窗口取消隔离；M9 子任务归属判定 `targetsCurrentClient` 对齐 Electron 双层 AND 语义（忽略 delivery_policy、空 target=本地、平台派发=远程）。
+- M11 快照清理；`WorkerApprovalHook` 策略评估 `join()` 加 30s 超时界（超时≠DENY，显式 failedFuture）。
+- `TaskExecutor.pendingCancels` LRU 驱逐加 warn（超容量驱逐最旧取消可能放行未检查任务）。
+
+### 12.3 低危（约 12）
+
+- `relation_sessions` 规范化对齐后端校验器（strip 空白、保序去重、上限 5、空收敛 null 省略字段）。
+- `/config` 一次失败不再永久缓存：失败负缓存 ~30s 后重试，成功永久缓存（`serverConfigNegativeCacheMs`）。
+- 探针鉴权：`/health`、`/api/health_check` 走 `getUnauthenticated`（不带 Bearer/凭证头），`/api/v1/version` 保持鉴权。
+- 对账重放过滤：`CheckpointToolResultsAdapter` 混合 RECEIVED/DISCARD_PAUSED 场景仅重放仍未确认（outstanding）条目，剔除已接收/暂停冻结 call_id（paused 丢弃语义）；全 RECEIVED 删除/全 PAUSED 丢弃裁决不变。
+- 插件低危：glob 字符类、`select_option` 空 label、search 字段口径注释纠正等。
+
+### 12.4 误报降级（仅文档对齐，不改逻辑）
+
+- **M6 PermissionGate 写分支 DENY→DIRECT→ask**：与 Electron `evaluateApproval`（security.js:1042-1046）一致，非缺陷，维持现状。
+- **M10 白板**：Java 后台端白板仅以排除项 + 防御性技能过滤出现，前端白板能力不纳入计划，无需改动。
+- **ClientInstructionsLoader 1MB 限长**：按 UTF-16 content 长度计、超限丢弃剩余层（非切片）、merged 头部不计入预算——与 Electron `toPackage`（instructions.js:369-402）逐字一致；仅补 warn 日志，逻辑不变。
+- **search_files 字段口径**：Java 代码已正确输出沙盒相对路径（对齐 rg 引擎相对输出，非 node 兜底绝对路径），仅 doc 注释误称绝对，已纠正注释，代码与测试不变。
+
+### 12.5 回归测试新增
+
+- `CollaborationProtocolTest`：handler 异常→平台重投、并发 send 串行化（16 虚拟线程×8 帧，overlaps=0）。
+- `AgentSessionTaskHandlerTest`：accepted-ack 不早于首个流事件。
+- `TaskExecutorTest`：pendingCancel LRU 驱逐 warn。
+- `PlatformReconciliationTest`：混合 RECEIVED 与混合 DISCARD_PAUSED 重放载荷不含已解决 call_id。
+- `TaiyiAgentServerConfigTest`：`/config` 失败负缓存窗口后重试成功并永久缓存。
+- `PlatformProbeClientTest`：开放探针不带鉴权、version 带鉴权。
+- `ChatRequestTest`：`relation_sessions` 规范化与空省略。
+- `ResumeLeaseRegistryTest`、`AgentSessionConcurrencyQuotaTest`、`DangerousCommandGuardTest`/`PermissionGateTest` 等随 H1/H3/M1 落地。

@@ -758,6 +758,6 @@ SDK 不为第三方任务系统封闭执行与回报入口，预留以下使用�
 
 默认 Flow、Flow Metadata、媒体理解、本地/远程浏览器、高价值工具及完整 SKILL 供应机制已拆分为独立计划：
 
-- [TaiyiFlow Java SDK Electron 后台能力对齐实施计划（Phase AA–AG）](plan-taiyiflowJavaSdk-capability-alignment.prompt.md)
+- [TaiyiFlow Java SDK Electron 后台能力对齐实施计划（Phase AA–AL）](plan-taiyiflowJavaSdk-capability-alignment.prompt.md)
 
-该独立文档是 Phase AA–AG 的唯一权威实施与状态记录，当前全部待审查、未实施；本路线图不再复制其阶段清单和验收明细。
+该独立文档是 Phase AA–AL 的唯一权威实施与状态记录：**AA–AG 已于 2026-11-14 SDK 侧闭环**（真实环境验收 1–9 项仍待执行）；**AH–AL 为 2026-11-21 依据能力差距审查报告（`review-taiyiflowJavaSdk-capability-gap.prompt.md`，含 11-21 复核）新增的差距闭环阶段，已于 2026-11-21 SDK 侧完成（真实验收待执行）**。本路线图不再复制其阶段清单和验收明细。
