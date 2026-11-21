@@ -118,13 +118,13 @@ import io.taiyiflow.sdk.plugins.BuiltinPlugins;
 import java.nio.file.Path;
 import java.util.List;
 
-// 全量注册：shell（含后台进程及别名）+ file + search，共 20 个工具
+// 全量注册：shell（含后台进程及别名）+ file + search，共 21 个工具
 BuiltinPlugins.registerAll(
         agent.getPluginManager(),
         Path.of("/tmp/taiyiflow-sandbox"),   // 沙盒根目录
         List.of("ls", "cat", "echo"));       // shell 命令白名单
 
-// 或只读注册：search / grep / glob_files / read_file / list_files，共 5 个工具
+// 或只读注册：search / grep / glob_files / search_files / read_file / list_files，共 6 个工具
 BuiltinPlugins.registerReadOnly(agent.getPluginManager(), Path.of("/tmp/taiyiflow-sandbox"));
 ```
 

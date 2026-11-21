@@ -17,6 +17,20 @@ outbox:
   max-retries: 32
 recovery-policy: AUTO
 permission-policy: CONFIRM
+# Fine-grained permission settings; configuration-only (skill content/model arguments cannot alter them).
+permission:
+  # Rules match by tool-name and/or shell command prefix; priority deny > ask > allow.
+  # Unknown actions fall back to ask; entries without selectors are dropped.
+  rules: []
+  #   - action: deny
+  #     command-prefix: rm
+  #   - action: ask
+  #     tool-name: schedule_delete
+  write-confirmation: confirm   # confirm | direct (file_edit / write_file)
+  # Per-category policy overrides: shell | file | browser | skill | schedule.
+  categories: {}
+  #   shell: auto
+  #   file: readonly
 approval:
   channel: PLATFORM
 execution:
@@ -24,9 +38,40 @@ execution:
   connect-timeout: PT15S
   drain-timeout: PT30S
   request-timeout: PT30S
+  stream-idle-timeout: PT1200S   # 0 disables idle checks
+  # tool-execution-timeout: PT40M  # optional; raised to max registered tool time + 60s (floor 31min)
+  # max-session-concurrency: 3  # optional; default follows server /config client_max_session_concurrency (0 blocks new chats)
+# First-frame request defaults; explicit per-request values always win.
+request:
+  input-type: chat
+  output-type: chat
+  # client-type: device  # first-frame client_type; the backend merges built-in skills by this value
+  # model: qwen-max
+  # reasoning: true
+  # internet-search: true
+  # knowledge-scopes: []   # knowledge base scope ids (list)
+  # knowledge-docs: []     # knowledge document ids (list)
+  auto-loop-enabled: false
+  # auto-loop-max-rounds: 6
+  image-generation: AUTO  # AUTO | "ON" | "OFF" (quote ON/OFF: YAML 1.1 treats them as booleans)
+  # group-id: <session-group-uuid>
+  relation-sessions: []
+  # agent-app-id: <app-id>
+  # agent-app-owner-id: <owner-uuid>
+  # client-context-dir: <context-label>
+  # long-term-memory-enabled: true
+  # cross-session-memory-enabled: false
+  # Opt-in client_instructions supply from explicit directories only (no home scan).
+  instruction-directories: []
 tools:
   builtin-tools: false
   allowed-shell-commands: []
+  # shell:
+  #   command-timeout: PT30S  # built-in shell command timeout (plugin default 30s)
+  # subtask:
+  #   timeout: PT1H           # per-subtask completion timeout
+  #   max-parallelism: 4      # local ceiling; server max_parallelism_subtask only tightens it (0 disables run_subtask)
+  #   max-tasks: 16           # local batch ceiling
   media: false
   skills:
     enabled: false
@@ -40,6 +85,9 @@ tools:
     sync-mode: DISABLED
   browser:
     mode: DISABLED
+    # Browser tool approval mode, independent of the global policy:
+    # ask | follow_a_plan | skip_all_permission_checks (unknown values fall back to ask)
+    permission-mode: ask
     # HEADLESS and REMOTE_CDP are mutually exclusive alternatives.
     # mode: HEADLESS
     # executable-path: /opt/pw-browsers/chromium-1148/chrome-linux/chrome

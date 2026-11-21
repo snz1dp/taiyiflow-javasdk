@@ -88,7 +88,8 @@ taiyiflow-javasdk/
 
 - `.github/prompts/plan-taiyiflowJavaSdk.prompt.md` — 初始规划（Phase A–F 已完成）
 - `.github/prompts/plan-taiyiflowJavaSdk-roadmap.prompt.md` — 后续运行时实施唯一权威总计划：协议纠偏、执行控制、数字人形态与运行时增强（Phase G–Z 已完成）
-- `.github/prompts/plan-taiyiflowJavaSdk-capability-alignment.prompt.md` — Electron 后台能力对齐独立计划：默认 Flow、Flow Metadata、媒体理解、浏览器与 SKILL 供应（Phase AA–AG 待审查）
+- `.github/prompts/plan-taiyiflowJavaSdk-capability-alignment.prompt.md` — Electron 后台能力对齐独立计划：默认 Flow、Flow Metadata、媒体理解、浏览器与 SKILL 供应（Phase AA–AG SDK 侧完成；差距闭环 Phase AH–AL SDK 侧完成，真实验收均待执行，决策点 10–16 已定案）
+- `.github/prompts/review-taiyiflowJavaSdk-capability-gap.prompt.md` — 能力差距审查报告（2026-11-19 审查 + 11-21 复核）：差异清单行动 #1–#21 已落入对齐计划 Phase AH–AL，非实施计划
 
 ## 参考工程
 

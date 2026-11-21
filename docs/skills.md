@@ -61,7 +61,7 @@ metadata:
 | `files` | 允许 `skill_fetch` 读取的附属文件声明；字符串或 `{path, source, description}` 对象 |
 | `metadata.requires_env` | 环境变量名数组；`skill_list` 只报告缺失变量名，不读取或输出变量值 |
 | `metadata.request_type` / `request_types` | 限制技能适用的请求模式 |
-| `metadata.tool_category` | 覆盖顶层 category；browser/chrome 分类在没有浏览器工具时会被过滤 |
+| `metadata.tool_category` | 覆盖顶层 category；browser/chrome 分类在没有浏览器工具（`taiyiflow-in-chrome__*`）时会被过滤；whiteboard 分类在没有非入口白板工具（`whiteboard_*`，仅 `whiteboard_open` 视为白板未打开）时会被过滤，对齐 Electron 白板打开状态过滤语义 |
 
 文件声明只能使用安全的相对路径，不能是绝对路径、盘符路径、父目录逃逸或隐藏路径。文件系统扫描跳过隐藏目录、`node_modules` 和符号链接。默认最多发现 100 个技能，单个 `SKILL.md` 最大 1,000,000 字节，正文最大 200,000 字符；可通过 `SkillLimits` 收紧限额。
 

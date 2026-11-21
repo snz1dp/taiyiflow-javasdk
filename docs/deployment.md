@@ -92,6 +92,16 @@ client-id: ""                                 # 可选；缺省随机 UUID
 device-id: ""                                 # 可选；缺省 auth.deviceId()
 recovery-policy: AUTO                         # MANUAL | AUTO（默认 AUTO）
 permission-policy: CONFIRM                    # AUTO | CONFIRM | READONLY（默认 CONFIRM）
+permission:                                   # 细粒度权限；仅配置层可改，技能正文/模型参数不得反向修改
+  rules: []                                   # 工具名/命令前缀规则；优先级 deny > ask > allow
+  #   - action: deny                          # 非法 action 归一为 ask；无选择器条目丢弃
+  #     command-prefix: rm
+  #   - action: ask
+  #     tool-name: schedule_delete
+  write-confirmation: confirm                 # confirm | direct（file_edit / write_file 写确认）
+  categories: {}                              # 类别档位覆盖：shell | file | browser | skill | schedule
+  #   shell: auto                             # 取值 auto | confirm | readonly（非法键/值丢弃）
+  #   file: readonly
 approval:
   channel: PLATFORM                           # PLATFORM | LOCAL_CALLBACK（默认 PLATFORM）
 execution:
@@ -99,14 +109,43 @@ execution:
   connect-timeout: PT15S                      # 默认 15s
   drain-timeout: PT30S                        # 默认 30s
   request-timeout: PT30S                      # 默认 30s
+  stream-idle-timeout: PT1200S                # 默认 1200s；0 禁用空闲检测
+  # tool-execution-timeout: PT40M             # 可选；低于推导下限会被抬升（注册工具最大时长+60s，且不低于 31min）
+  # max-session-concurrency: 3                # 可选；缺省跟随服务端 /config client_max_session_concurrency（0 阻止新对话）
 outbox:
   max-entries: 1000                           # 默认 1000
   max-entry-bytes: 1048576                    # 默认 1MiB
   max-total-bytes: 16777216                   # 默认 16MiB
   max-retries: 32                             # 默认 32
+request:                                      # 首帧请求默认值；单次请求显式值优先
+  input-type: chat                            # 默认 chat
+  output-type: chat                           # 默认 chat
+  # client-type: device                       # 首帧 client_type，默认 device；服务端按此合并内置技能
+  # model: qwen-max                           # 须在平台 available_model_keys 范围内
+  # reasoning: true
+  # internet-search: true
+  # knowledge-scopes: []                      # 知识库范围 ID 列表
+  # knowledge-docs: []                        # 知识文档 ID 列表
+  auto-loop-enabled: false                    # 默认 false（显式下发）
+  # auto-loop-max-rounds: 6                   # >= 0
+  image-generation: AUTO                      # AUTO | "ON" | "OFF"（ON/OFF 需加引号）
+  # group-id: <session-group-uuid>
+  relation-sessions: []                       # 最多 5 个
+  # agent-app-id: <app-id>
+  # agent-app-owner-id: <owner-uuid>
+  # client-context-dir: <context-label>
+  # long-term-memory-enabled: true            # 缺省不下发，由服务端默认决定（仅填补缺省，不覆盖显式值）
+  # cross-session-memory-enabled: false
+  instruction-directories: []                 # 显式目录才供应 client_instructions；默认关闭
 tools:
   builtin-tools: false                        # Shell/File/Search 默认不注册
   allowed-shell-commands: []                  # builtin-tools=true 时仍需精确白名单
+  # shell:
+  #   command-timeout: PT30S                  # 内置 shell 命令超时（插件默认 30s）
+  # subtask:
+  #   timeout: PT1H                           # 单个子任务完成超时
+  #   max-parallelism: 4                      # 本地上限；服务端 max_parallelism_subtask 只收紧（0 禁用 run_subtask 供应）
+  #   max-tasks: 16                           # 本地单批上限
   media: false                                # 文档/图片/音频/视频理解
   skills:
     enabled: false
@@ -120,6 +159,7 @@ tools:
     sync-mode: DISABLED                       # 配置化运行时当前仅支持 DISABLED
   browser:
     mode: DISABLED                            # DISABLED | HEADLESS | REMOTE_CDP
+    permission-mode: ask                      # ask | follow_a_plan | skip_all_permission_checks；独立于全局档位，非法值回落 ask
     # executable-path: /opt/pw-browsers/chromium-1148/chrome-linux/chrome
     launch-arguments: []
     action-timeout: PT15S
@@ -166,6 +206,29 @@ extensions:
 - **目录隔离**：工作区（workspace）只放 instance_id、最小运行标识与临时文件；state-dir 只放瞬态补传发件箱（Outbox）；凭证加密文件与密钥放独立 credentials 卷，禁入 workspace/runtime-state/镜像。
 - 跨容器恢复依赖平台权威关联/共享状态/幂等查询（P-RECOVERY、P-RESULT、P-APPROVAL 后端能力）；能力不足时保持 `REPORT_UNKNOWN` 人工对账，不自动启动新执行。
 
+## 经 Dashserv 网关接入的身份要求
+
+DigitalWorker 经 Dashserv 网关接入平台时，**SDK 侧认证头不变**（REST 仍发 `Authorization: Bearer`，WS 仍走 `__TOKEN__`）；`X-Credential-Username`、`X-Credential-Userid`、`X-User-Scope`、`X-App-Id` 由网关注入，后端身份实际取自这些头。部署须满足：
+
+- **`X-App-Id` 必须是已注册的 Dashserv consumer（调用身份 code，即 Consumer.username），且映射到启用应用**——它不再直接等于应用代码。后端经 `GET {gateway_dashserv_api_url}/consumers/{code}` 校验 consumer 存在、`enabled=true`、`app_code` 非空，再以 `app_code` 作服务账号名四级校验（本地用户有效、XEAI 功能节点启用、存在启用应用、XEAI 用户启用）；任一失败返回 **401「服务账号或关联应用无效」**。
+- **XEAI 侧禁用即 401**：XEAI 是远程统一身份认证用户中心，应用在其中注册为功能节点；即使网关 consumer 正常，XEAI 禁用应用后服务账号路径同样拒绝。
+- consumer 校验结果缓存 60s（含负缓存）：**停用 consumer 最迟 60s 生效**；网关管理接口请求超时 5s。网关不可达或返回异常信封时错误向上传播（非 401），SDK 按普通连接/请求失败退避重试。
+- 服务账号角色列表恒为空：要求非空角色的端点（如知识库 import/parse-record）对服务账号必然 403，属预期 fail-closed，见 [digital-worker.md](digital-worker.md) 生态 REST 配套。
+
+后端网关侧配置（`TAIYIFLOW_` 环境变量前缀，源码 `services/settings/base.py`）：
+
+| 配置键 | 默认值 | 作用 |
+|--------|--------|------|
+| `gateway_dashserv_api_url` | `http://localhost:9088/gateway/dashboard/api/admin` | 网关管理接口 URL 前缀；未配置则服务账号解析直接 401 |
+| `gateway_dashserv_access_algorithm` | `RS256` | 访问网关的 JWT 签名算法 |
+| `gateway_dashserv_token` | 空 | 访问令牌（作 JWT 的 `iss`；仅 token 时以 Bearer 直传） |
+| `gateway_dashserv_private_key` | 空 | RSA 私钥（PEM/单行转义/裸 base64；与 token 齐备时签 RS256 JWT） |
+| `gateway_dashserv_token_expires` | `600` | 令牌有效期（秒） |
+
+直连（无网关）且后端要求凭证头的场景，`TaiyiAgent.Builder.credentialHeaders(Map)` 可随请求附带上述头；DigitalWorker 形态以网关注入为准，不在 SDK 内伪造身份。网关路由注册与部署细节参见后端 `doc/deploy/智能体开发底座安装部署说明.md` §8 与 `plan-gatewayDashservCallerIdentity.prompt.md`。
+
 ## 观测
 
 经 `WorkerHook` 五回调（onReady/onTaskStart/onTaskFinish/onError/onStop）接日志、指标或追踪；建议记录 workerId、taskId、执行状态、回报未知数、重连失败次数；日志不得含令牌或完整业务结果。
+
+容器探针如需核对平台依赖，可经 `worker.probes()` 调平台 `GET /health`（存活）与 `GET /api/health_check`（storage/chat/db 分项就绪），两者免鉴权；`GET /api/v1/version` 需登录。这是对外部依赖的探测，SDK 自身仍不暴露 HTTP 健康端口。

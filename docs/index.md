@@ -28,7 +28,7 @@ features:
     details: 流式输出、工具接管、权限审批、会话生命周期四类钩子（Hook），业务定制不侵入 SDK；不挂钩子即走内置默认行为。
   - icon: 🔧
     title: 内置工具与 MCP
-    details: Shell、文件、搜索基础入口共 20 个工具，另有媒体理解、技能、定时、交互与浏览器可选工具，并支持 Streamable HTTP 与 stdio 两种 MCP 形态。
+    details: Shell、文件、搜索基础入口共 21 个工具，另有媒体理解、技能、定时、交互与浏览器可选工具，并支持 Streamable HTTP 与 stdio 两种 MCP 形态。
   - icon: 🛡️
     title: 安全可控
     details: READONLY / CONFIRM / AUTO 三级权限策略，工具沙盒与命令白名单，ASK 审批闭环，敏感操作尽在掌控。

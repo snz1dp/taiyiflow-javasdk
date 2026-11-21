@@ -32,18 +32,27 @@ TaiyiAgent agent = TaiyiAgent.builder()
 | 方法 | 默认值 | 说明 |
 |------|--------|------|
 | `maxSessions(int)` | 100 | 并发会话上限，超限创建会话抛异常 |
+| `maxSessionConcurrency(Integer)` | null → 跟随服务端 | 执行中会话并发配额；显式值优先于 `/config` `client_max_session_concurrency`，0 阻止新对话，见 [execution-control.md](execution-control.md) |
+| `clientType(String)` | `device` | 首帧 `client_type`（非空白）；服务端按此合并内置技能，单次请求显式值优先 |
+| `requestDefaults(RequestDefaults)` | chat/chat、auto-loop 关、image AUTO | 首帧请求默认值；单次请求显式值优先；retry/repeat 复用快照 |
+| `instructionDirectories(List<Path>)` | 空（关闭） | 显式目录才供应 `client_instructions`，不扫描 home |
 | `eventQueueCapacity(int)` | 1024 | 会话事件队列容量，必须 > 0 |
 | `streamProtocol(StreamProtocol)` | `AUTO` | `AUTO` / `SSE` / `WEBSOCKET`；AUTO 读取服务端 `/api/v1/config` 的 `stream_protocol`，读取失败回退 WebSocket |
 | `sseFallbackEnabled(boolean)` | true | WS 失败时是否回退 SSE |
+| `streamIdleTimeout(Duration)` | 1200s | 流空闲看门狗超时；`Duration.ZERO` 禁用空闲检测 |
+| `toolExecutionTimeout(Duration)` | 自动推导 | 工具执行期的流空闲超时；缺省按注册工具最大时长 + 60s 推导且不低于 31min，显式值低于该下限会被抬升 |
 | `flowAdapter(FlowAdapter)` | 无 | 发送前定制 `ChatRequest` 的函数式接口 |
+
+`RequestDefaults` 语义要点：`knowledgeScopes`/`knowledgeDocs` 支持三层入口（Builder、worker.yml `request.knowledge-*`、starter `taiyiflow.request.knowledge-*`）；`longTermMemoryEnabled`/`crossSessionMemoryEnabled` 仅填补缺省（null 不下发，由服务端默认决定），显式值原样下发；`output_language` 在服务端无消费点，SDK 不设字段（如需透传可走 tweaks）。
 
 ### 权限
 
 | 方法 | 默认值 | 说明 |
 |------|--------|------|
-| `permissionPolicy(PermissionPolicy)` | `READONLY` | `AUTO` / `CONFIRM` / `READONLY`，见 [hooks.md](hooks.md) |
-| `permissionHook(PermissionHook)` | 无 | 策略级审批钩子（Hook） |
-| `permissionTimeout(Duration)` | 300s | ASK 审批等待超时；`Duration.ZERO` 永不超时；其他有效值 10–6000s |
+| `permissionPolicy(PermissionPolicy)` | `READONLY` | `AUTO` / `CONFIRM` / `READONLY` 三档兼容，见 [hooks.md](hooks.md) |
+| `permissionSettings(PermissionSettings)` | 按 policy 构造 | 细粒度权限：规则/类别档位/写确认/浏览器模式；配置后替代裸档位成为默认 `PermissionGate`，见 [hooks.md](hooks.md) |
+| `permissionHook(PermissionHook)` | 无 | 策略级审批钩子（Hook）；未挂时会话回落 `PermissionGate` |
+| `permissionTimeout(Duration)` | 300s | ASK 审批等待超时；`Duration.ZERO` 永不超时；其他有效值 10–6000s；超时返回显式 timeout 结果（≠DENY） |
 
 ### 断线恢复
 
@@ -123,6 +132,16 @@ FlowMetadata refreshFlowMetadata();        // 强制刷新 Flow Metadata
 McpClient mcpServers();                    // 服务端 MCP 注册管理
 CollaborationTaskClient collaborationTasks(); // 协同任务生命周期上报
 ExecutionController executionControl();    // run 级暂停/取消/检查点查询
+ToolCallRecordClient toolCallRecords();    // 平台工具调用记录对账
+NotificationClient notifications();        // 通知 recent / markRead（REST 兜底）
+ModelsClient models();                     // Flow 可用模型列表
+SessionGroupClient sessionGroups();        // 会话分组 CRUD
+IntentionClient intentions();              // run/message 意图记录兜底补查（404→null）
+ClientDirectoryClient clientDirectory();   // 在线桌面/协同主体目录（发起方形态）
+QuotaCreditClient quotaCredits();          // 配额/积分预检（4003 为 WS 关闭码）
+PlatformProbeClient probes();              // 平台 /health、/api/health_check、/api/v1/version
+AgentAppClient agentApps();                // 智能体应用只读目录
+AgentPluginClient agentPlugins();          // 智能体插件只读目录
 
 // 运行时组件
 PluginManager getPluginManager();          // 工具注册表
@@ -182,8 +201,8 @@ AgentSession chat(ChatRequest request);                       // 高级协议请
 | `pause()` | 请求服务端暂停当前执行轮次（run，REST 控制接口），返回 `AgentLoopControlResult` |
 | `cancel()` | 服务端取消 + 关闭本地流资源 |
 | `attach()` | 重接（attach）仍在执行的原轮次，不启动新执行 |
-| `resume()` | 自动发现并恢复当前可续跑检查点（checkpoint） |
-| `resume(ResumableCheckpoint)` | 恢复指定检查点 |
+| `resume()` | 自动发现并恢复当前可续跑检查点（checkpoint）；受 per-checkpoint 租约锁保护 |
+| `resume(ResumableCheckpoint)` | 恢复指定检查点；租约被占用时抛 `IllegalStateException`；建流 60s 无首个事件按可恢复错误重试 |
 | `retry()` | 新轮次：服务端已持久化则续做，否则重发原输入 |
 | `repeat()` | 新轮次：复用上一轮输入、参数覆盖、文件与请求类型（input/tweaks/files/requestType） |
 | `interrupt()` | 仅本地中断，不调服务端控制 API |
@@ -197,7 +216,7 @@ boolean accepted = session.approve(toolCallId);
 boolean rejected = session.deny(toolCallId, "not allowed");
 ```
 
-重复或未知回执返回 `false`。超时（默认 300s）形成失败结果并回传平台。
+重复或未知回执返回 `false`。超时（默认 300s）形成显式 timeout 失败结果（≠DENY，提示模型换方案）并回传平台。
 
 ### 状态与等待
 
@@ -251,13 +270,13 @@ agent.shutdown();
 
 ## 流空闲看门狗
 
-会话内置空闲检测（当前实现固定值，不可通过 Builder 配置）：
+会话内置空闲检测，可通过 Builder 配置（DigitalWorker / Spring / worker.yml 有同名配置项，默认值一致）：
 
-- 无工具执行时：流空闲 **90 秒**触发超时处理；
-- 有工具执行时：放宽到 **15 分钟**；
+- 无工具执行时：流空闲超过 `streamIdleTimeout`（默认 **1200 秒**）触发超时处理；`Duration.ZERO` 禁用；
+- 有工具执行时：放宽到 `toolExecutionTimeout`；缺省自动推导 = 已注册工具最大执行时长 + 60s，且不低于 **31 分钟**；显式设置低于该下限的值会被抬升到下限；
 - 每次流活动、工具起止都会重置计时。
 
-单工具执行超时另由 `ToolRuntime.Config.executionTimeout`（默认 60s）控制。
+单工具执行超时另由 `ToolRuntime.Config.executionTimeout`（默认 60s）控制，与看门狗相互独立。
 
 ## REST 能力面速览
 
@@ -274,6 +293,10 @@ agent.shutdown();
 | `CollaborationTaskClient` | `create`、`get`、`cancel`、`list`、`running`、`success`、`failure`、`cancelled`（支持 expectedVersion 乐观锁） |
 | `ConfigClient` | `get()` |
 | `ExecutionController` | `pause(sessionId, runId)`、`cancel(sessionId, runId)`、`listResumable(flowId, sessionId)` |
+| `ToolCallRecordClient` | `list(flowId, sessionId, messageId, Query)` → `Page`、`byCallId(...)` → `Map<String, Record>`（`resultReceived`/`frozenPaused`/`frozenOffline`） |
+| `NotificationClient` | `recent([limit])`（limit 1–100，默认 100）、`markRead(notificationId)` |
+| `ModelsClient` | `list(flowId[, clientType])` |
+| `SessionGroupClient` | `list(flowId[, clientId, keyword, orderBy, offset, limit])`、`create`、`get`、`update`、`delete` |
 
 端点明细见 [protocol.md](protocol.md)。
 

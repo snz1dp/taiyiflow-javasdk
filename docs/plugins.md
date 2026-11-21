@@ -7,10 +7,10 @@
 ## 注册入口
 
 ```java
-// 全量：Shell 13 个 + File 4 个 + Search 3 个，共 20 个工具
+// 全量：Shell 13 个 + File 4 个 + Search 4 个，共 21 个工具
 BuiltinPlugins.registerAll(PluginManager pm, Path sandboxRoot, List<String> allowedShellCommands);
 
-// 只读：search / grep / glob_files / read_file / list_files，共 5 个工具
+// 只读：search / grep / glob_files / search_files / read_file / list_files，共 6 个工具
 BuiltinPlugins.registerReadOnly(PluginManager pm, Path sandboxRoot);
 ```
 
@@ -136,6 +136,32 @@ new SearchPlugin(Path sandboxRoot);
 
 `glob_files` 按 glob 匹配相对路径：`pattern` 默认 `**/*`、`path` 默认 `.`，返回 `{files, count, truncated}`，最多 1000 个排序后的常规文件。
 
+### search_files（Electron 契约别名）
+
+与 Electron `file-tools.js` 的 `search_files` schema 对齐，供同一 Flow 下按 Electron schema 生成参数的模型直接调用；只读，权限链与 `search` 一致。
+
+| 参数 | 类型 | 必填 | 默认 | 说明 |
+|------|------|------|------|------|
+| `pattern` | string | 是 | — | 文本或正则 |
+| `path` | string | 否 | `.` | 搜索根（沙盒内），可指向单个文件 |
+| `glob` | string | 否 | — | 文件 glob 过滤，如 `**/*.js` |
+| `includePatterns` | string[] | 否 | 空 | 仅搜索命中任一模式的文件 |
+| `excludePatterns` | string[] | 否 | 空 | 命中任一模式的文件跳过 |
+| `caseSensitive` | boolean | 否 | **true** | 与 Electron 一致（`search`/`grep` 无此参数，恒大小写敏感） |
+| `isRegexp` | boolean | 否 | false | false 按字面量（`Pattern.quote`） |
+| `includeHidden` | boolean | 否 | false | 是否搜索隐藏文件/目录 |
+| `outputMode` | string | 否 | `content` | `content` / `files_with_matches` / `count` |
+| `offset` | integer | 否 | 0 | 分页偏移，仅 `content` 模式生效 |
+| `maxResults` | integer | 否 | 200 | 上限 200（超出收紧，≤0 回落 200） |
+
+返回（`engine` 恒为 `java`，`root` 为沙盒相对搜索根，路径均不暴露绝对主机路径）：
+
+- `content`：`{matches:[{path, relative_path, line, text}], count, total_matches, offset, has_more, root, engine, output_mode}`；`path` 相对沙盒根、`relative_path` 相对搜索根，`text` 去尾部空白；`has_more = count >= maxResults`。
+- `files_with_matches`：`{files:[{relative_path, count}]（按路径排序）, count, total_matches, ...}`。
+- `count`：`{count, matches:[], total_matches, ...}`，全量扫描计数。
+
+遍历语义对齐 Electron Node 回退实现：跳过 `SKIP_DIRS` 重目录（node_modules/.git/dist/target 等）与隐藏项（除非 `includeHidden`）、按扩展名集合 + 文件头 512 字节 NUL 检测跳过二进制、不跟随符号链接、不可读文件静默跳过；glob 支持花括号展开且 `**/` 匹配零或多层目录。`total_matches` 与 Electron 一致为**扫描停止前**的计数（content/files 模式窗口满即停，count 模式全量），不是穷尽总数。**不解析 .gitignore**（Electron Node 回退会解析，Java 侧以 SKIP_DIRS + 显式 excludePatterns 覆盖）。
+
 ## 媒体理解：MediaUnderstandingPlugin
 
 ```java
@@ -190,12 +216,15 @@ BrowserRuntime browser = BrowserToolProvider.register(
     agent.getPluginManager(), agent.getRestClient(), settings);
 ```
 
-工具统一使用 `taiyiflow-in-chrome__` 前缀，共 17 个：
+工具统一使用 `taiyiflow-in-chrome__` 前缀，17 个可用动作 + 1 个显式不支持声明：
 
 - 标签与导航：`tabs_context`、`tabs_create`、`navigate`、`set_view_size`、`wait_for`。
 - 页面操作：`click`、`type`、`hover`、`scroll`、`select_option`、`press_key`。
 - 读取与诊断：`get_element_info`、`get_element_ref`、`read_text`、`read_console`、`screenshot`。
 - 独立开关：`execute_js`，默认关闭。
+- `set_browser_type`：注册但恒返回明确「不支持（Chromium-only）」错误结果（提示模型勿重试），替代泛化 "No handler for tool"；Java SDK 不做 UA 预设切换。
+
+**Electron 参数别名兼容**（仅参数名映射，不放宽 URL/网络/execute_js 安全策略；规范名优先）：`type` 的 `append`（true=不清空原内容）↔`clear`、`press_enter`↔`submit`；`select_option` 的 `text`↔`label`；`read_text` 的 `max_chars`↔`max_characters`；`screenshot` 的 `input_value`↔`input`（理解提示词）。`screenshot` **显式拒绝自定义 `path`**（返回错误并提示改用返回值路径），截图固定落会话 workspace `.snz1dp/browser/`，不静默忽略。
 
 HEADLESS 使用 Playwright Chromium；REMOTE_CDP 连接指定端点，不枚举或接管已有用户标签，也不关闭外部浏览器。所有页面操作在单一驱动线程串行执行，会话只访问自己创建的标签。导航和网络访问受 `allowedHosts/allowedCidrs` 约束；远程 endpoint、header 和 query token 在日志与异常中脱敏。截图写入会话 workspace，`understand=true` 时复用平台图片理解，理解失败仍保留截图路径。
 
@@ -215,6 +244,8 @@ new WorkspaceAudit(Path root, Limits limits);
 - 忽略目录：`.git node_modules dist build out target __pycache__ .venv .cache .snz1dp .idea .vscode .gradle state state-dir credentials secrets` 等；跳过符号链接与临时文件。
 - 降级原因码：`MAX_DEPTH_EXCEEDED`、`MAX_ENTRIES_EXCEEDED`、`TIME_BUDGET_EXCEEDED`、`SCAN_CONFLICT`、`SCAN_IO_ERROR`；降级时 `complete=false`，绝不把部分结果当完整变更集。
 - 差异对比产出 create/edit/delete；声明过的路径从扫描结果排除；按指纹去重避免重复上报同一修订。
+- **edit 归属过滤**（对齐 Electron `hasFileSnapshot` 口径）：扫描发现的 `edit` 仅当本会话 agent 写过/声明过该路径（有内容快照）才补报；从未触碰的文件被编辑视为外部进程改动，不补报。`create`/`delete` 不受此过滤。快照来源：shell 声明操作（`fileOperations`）与 `write_file`/`file_edit` 成功写入（经 `BuiltinPlugins.registerAll` 或 starter 注册时共享同一 `WorkspaceAudit`）；按会话分桶、每会话上限 10000 条先进先出，`clearSnapshots(sessionId)` 或 `clear(null,null)` 清除。
+- **同工作区占用警告**：同一 agent 的多个会话并行执行共享工作区根目录，新发起对话时若已有其他执行中会话，记非阻断 `WARN` 日志（并行可能互相覆盖文件），不阻断发起、无协议变更；自动续跑/检查点恢复不经此路径，不重复提示。
 
 ## 自定义工具
 

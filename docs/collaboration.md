@@ -18,7 +18,7 @@ new CollaborationPlugin(baseUrl, accessTokenSupplier, role, clientId, deviceId, 
 
 - 角色常量：`ROLE_COLLABORATION_WORKER = "collaboration_worker"`、`ROLE_PRIMARY_CLI = "primary_cli"`；其他角色抛异常。
 - `clientId` 与 `deviceId` 至少一个非空；`primary_cli` 必须提供 `instanceId`。
-- worker 角色握手附能力声明：`notification.v1, task.remote_task.v1, task.dialogue_subtask.v1`。
+- worker 角色握手附能力声明：`notification.v1, task.remote_task.v1, task.dialogue_subtask.v1, agent_loop.resume.v1`。
 - 默认节奏：心跳 30s、入站静默超时 90s、重连基础延迟 5s / 上限 60s（指数退避 + 抖动）；`activityTimeouts(...)` 可在 start 前调整。
 
 ### 回调注册
@@ -32,6 +32,12 @@ plugin.onTaskSnapshot(snapshot -> { ... });     // 平台任务快照（对账�
 plugin.onRelease(push -> { ... });              // 版本发布推送
 plugin.onConnectionReady(payload -> { ... });
 plugin.onKicked(reason -> { ... });             // 被踢下线（自动 stop）
+
+// notification.v1 / agent_loop.resume.v1
+plugin.onNotification(payload -> { ... });      // 通知投递；每条自动回执 notification.ack
+plugin.onResumeRequested(request -> { ... });   // 平台驱动恢复请求（ResumeRequest），处理方负责实际恢复并回执
+plugin.onCheckpointState(payload -> { ... });   // 可选观察：检查点状态推送（跨实例接管时机）
+plugin.onOriginAvailable(payload -> { ... });   // 可选观察：原实例可用推送（跨实例接管时机）
 ```
 
 ### 生命周期与回执
@@ -54,6 +60,12 @@ plugin.sendScheduleAck(scheduleId, runRecordId);
 plugin.sendScheduleStatus(scheduleId, runRecordId, status);
 plugin.sendScheduleResult(scheduleId, runRecordId, result);
 plugin.sendScheduleError(scheduleId, runRecordId, error);
+
+// 通知与恢复回执
+plugin.fetchRecentNotifications(limit, cursor);              // WS 拉取近期通知，平台回 notification.recent 并重投
+plugin.markNotificationRead(deliveryId);                     // 标记一条投递已读（notification.read 按 delivery_id）
+plugin.sendResumeNotificationAck(notificationId, checkpointId,
+    checkpointVersion, result);                              // 恢复通知回执，result 见下文
 ```
 
 ### TaskDispatch 字段
@@ -74,7 +86,25 @@ plugin.sendScheduleError(scheduleId, runRecordId, error);
 | `tasks.recent` | 近期任务快照 |
 | `connection.kicked` | stop + onKicked 回调 |
 | `release.push` | onRelease 回调 |
+| `notification.deliver` | onNotification 回调 + 自动 `notification.ack`（按 delivery_id） |
+| `notification.recent` | 近期通知快照，逐条重投（同样自动 ack） |
+| `agent_loop.resume_requested` | onResumeRequested 回调（ResumeRequest） |
+| `agent_loop.checkpoint_state` | onCheckpointState 回调 |
+| `agent_loop.origin_available` | onOriginAvailable 回调 |
 | `connection.ping/pong` | 心跳 |
+
+**显式排除**：CLI 隧道事件族 `agent_loop.persistence_activate` / `agent_loop.persistence_active` / `agent_loop.event` 属 Electron 主进程渲染层隧道协议，worker 角色不声明也不处理（收到即忽略），避免"声明而不处理"的中间态。
+
+## notification.v1 与恢复通知语义
+
+- 通知投递自动回执 `notification.ack`；已读走 `notification.read`（delivery_id）或 REST 兜底。
+- **REST 兜底**：`agent.notifications()`（NotificationClient）提供 `recent([limit])`（`GET /api/v1/agents/client/notifications/recent?limit=`，limit 1–100 默认 100）与 `markRead(notificationId)`（`POST /api/v1/agents/client/notifications/{notification_id}/read`），WS 不可用时对账补拉。
+- `ResumeRequest` 字段：`notificationId, checkpointId, checkpointVersion, sessionId, runId, flowId, resumeStage, reason, expiresAt, payload`（前三项必填）。
+- 恢复回执 `agent_loop.resume_notification_ack` 携带 `notification_id/checkpoint_id/checkpoint_version`，result 与 Electron 一致：
+  - `accepted`：仅在恢复后**收到首个流事件**时回执；
+  - `already_running`：原执行仍在运行；
+  - `ignored_stale` / `ignored_expired` / `ignored_unsupported` / `ignored_stopped`：检查点过期/版本陈旧/不支持/已停止时忽略。
+- DigitalWorker 内置完整处理链路，见 [digital-worker.md](digital-worker.md)；执行控制语义见 [execution-control.md](execution-control.md)。
 
 ## 与 TaiyiAgent 的集成
 
