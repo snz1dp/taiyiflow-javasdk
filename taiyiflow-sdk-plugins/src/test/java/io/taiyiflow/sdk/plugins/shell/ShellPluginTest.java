@@ -195,6 +195,60 @@ class ShellPluginTest {
     }
 
     @Test
+    void scanEditRequiresSessionSnapshotAttribution() throws Exception {
+        ShellPlugin plugin = new ShellPlugin(tempDir, List.of("echo"), 10);
+        Path external = tempDir.resolve("external.txt");
+        Files.writeString(external, "v1");
+        assertTrue(plugin.execute(scanCall("echo warmup", null, true)).isSuccess());
+
+        Files.writeString(external, "v2-external-change");
+        ToolResult unattributed = plugin.execute(scanCall("echo check", null, true));
+        assertTrue(unattributed.isSuccess(), unattributed::getError);
+        assertEquals(0, unattributed.getResult().get("workspace_audit").get("scan_changes").asInt());
+        assertFalse(unattributed.getResult().has("file_operations"));
+
+        assertTrue(plugin.execute(scanCall("echo declare", "external.txt", false)).isSuccess());
+        Files.writeString(external, "v3-external-change-again");
+        ToolResult attributed = plugin.execute(scanCall("echo recheck", null, true));
+        assertTrue(attributed.isSuccess(), attributed::getError);
+        assertEquals(1, attributed.getResult().get("file_operations").size());
+        JsonNode change = attributed.getResult().get("file_operations").get(0);
+        assertEquals("edit", change.get("type").asText());
+        assertEquals("workspace_scan", change.get("source").asText());
+
+        Files.delete(external);
+        ToolResult deleted = plugin.execute(scanCall("echo after-delete", null, true));
+        assertTrue(deleted.isSuccess(), deleted::getError);
+        assertEquals("delete", deleted.getResult().get("file_operations").get(0).get("type").asText());
+    }
+
+    @Test
+    void fileToolWritesAttributeLaterScanEdits() throws Exception {
+        PluginManager pm = new PluginManager();
+        io.taiyiflow.sdk.plugins.BuiltinPlugins.registerAll(pm, tempDir, List.of("echo"));
+        try {
+            Path owned = tempDir.resolve("owned.txt");
+            Path foreign = tempDir.resolve("foreign.txt");
+            Files.writeString(foreign, "f1");
+            ToolCall write = new ToolCall("w-1", "write_file",
+                    mapper.readTree("{\"path\":\"owned.txt\",\"content\":\"o1\"}"));
+            assertTrue(pm.execute(write).isSuccess());
+            assertTrue(pm.execute(scanCall("echo warmup", null, true)).isSuccess());
+
+            Files.writeString(owned, "o2-external");
+            Files.writeString(foreign, "f2-external");
+            ToolResult result = pm.execute(scanCall("echo check", null, true));
+            assertTrue(result.isSuccess(), result::getError);
+            JsonNode ops = result.getResult().get("file_operations");
+            assertEquals(1, ops.size());
+            assertEquals("edit", ops.get(0).get("type").asText());
+            assertEquals(owned.toRealPath().toString(), ops.get(0).get("path").asText());
+        } finally {
+            pm.close();
+        }
+    }
+
+    @Test
     void scanBudgetDegradationIsExplicitAndDoesNotFakeNoChanges() throws Exception {
         Files.writeString(tempDir.resolve("one"), "1");
         Files.writeString(tempDir.resolve("two"), "2");
@@ -335,6 +389,26 @@ class ShellPluginTest {
     }
 
     @Test
+    void sessionFinishAndCloseHooksReleaseWorkspaceAuditState() {
+        PluginManager pm = new PluginManager();
+        WorkspaceAudit audit = new WorkspaceAudit(tempDir);
+        ShellPlugin.register(pm, tempDir, List.of("echo"), 10, audit);
+        Path file = tempDir.resolve("owned.txt");
+        audit.markSnapshot("session-1", file);
+        audit.captureBaseline("session-1", "run-1");
+        assertTrue(audit.hasSnapshot("session-1", file));
+
+        pm.notifySessionFinish("session-1");
+        assertFalse(audit.hasSnapshot("session-1", file),
+                "terminal finish must release the session's write-attribution snapshots");
+
+        audit.markSnapshot("session-2", file);
+        pm.notifySessionClose("session-2");
+        assertFalse(audit.hasSnapshot("session-2", file),
+                "close must release audit state of sessions that never reached a terminal finish");
+    }
+
+    @Test
     void registerAddsMultipleAliases() {
         PluginManager pm = new PluginManager();
         ShellPlugin.register(pm, tempDir, List.of("echo"));
@@ -354,6 +428,19 @@ class ShellPluginTest {
         ToolResult result = plugin.execute(makeCall("sleep 60"));
         assertFalse(result.isSuccess());
         assertTrue(result.getError().contains("timed out"));
+    }
+
+    @Test
+    void registerAllAppliesExplicitShellTimeout() throws Exception {
+        PluginManager pm = new PluginManager();
+        try {
+            io.taiyiflow.sdk.plugins.BuiltinPlugins.registerAll(pm, tempDir, List.of("sleep"), 1);
+            ToolResult result = pm.execute(makeCall("sleep 60"));
+            assertFalse(result.isSuccess());
+            assertTrue(result.getError().contains("timed out"));
+        } finally {
+            pm.close();
+        }
     }
 
     private ToolCall backgroundCall(String command, boolean scan) {

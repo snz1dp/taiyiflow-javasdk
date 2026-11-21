@@ -52,6 +52,9 @@ public final class WorkspaceAudit {
     private final Map<Bucket, Scan> baselines = new ConcurrentHashMap<>();
     private final Map<Bucket, Set<String>> reportedChanges = new ConcurrentHashMap<>();
     private final Map<Bucket, Object> bucketLocks = new ConcurrentHashMap<>();
+    private final Map<String, Map<String, Boolean>> sessionSnapshots = new ConcurrentHashMap<>();
+
+    private static final int MAX_SNAPSHOT_PATHS_PER_SESSION = 10_000;
 
     public WorkspaceAudit(Path root) {
         this(root, Limits.defaults());
@@ -164,12 +167,59 @@ public final class WorkspaceAudit {
             baselines.clear();
             reportedChanges.clear();
             bucketLocks.clear();
+            sessionSnapshots.clear();
             return;
         }
         Bucket bucket = Bucket.of(sessionId, runId);
         baselines.remove(bucket);
         reportedChanges.remove(bucket);
         bucketLocks.remove(bucket);
+    }
+
+    /**
+     * Record that this session's agent wrote or declared a path. Scan-discovered edits are only
+     * attributed to the session when such a snapshot exists; edits to never-touched files are
+     * treated as external process changes and not reported.
+     */
+    public void markSnapshot(String sessionId, Path path) {
+        if (path == null) {
+            return;
+        }
+        Map<String, Boolean> bucket = sessionSnapshots.computeIfAbsent(sessionId == null ? "" : sessionId,
+                ignored -> java.util.Collections.synchronizedMap(new LinkedHashMap<>(16, 0.75f, false) {
+                    @Override
+                    protected boolean removeEldestEntry(Map.Entry<String, Boolean> eldest) {
+                        return size() > MAX_SNAPSHOT_PATHS_PER_SESSION;
+                    }
+                }));
+        bucket.put(snapshotKey(path), Boolean.TRUE);
+    }
+
+    public boolean hasSnapshot(String sessionId, Path path) {
+        if (path == null) {
+            return false;
+        }
+        Map<String, Boolean> bucket = sessionSnapshots.get(sessionId == null ? "" : sessionId);
+        return bucket != null && bucket.containsKey(snapshotKey(path));
+    }
+
+    /**
+     * Release all in-memory state of one finished session: its write-attribution snapshots and
+     * every session/run bucket (baselines, reported fingerprints and bucket locks). Wired to the
+     * session-finish hook so long-running workers do not accumulate per-session state. Paused or
+     * disconnected sessions are not finished and keep their state for resume; a null sessionId
+     * addresses the default ("") session key used by markSnapshot/captureBaseline.
+     */
+    public void clearSession(String sessionId) {
+        String key = sessionId == null ? "" : sessionId;
+        sessionSnapshots.remove(key);
+        baselines.keySet().removeIf(bucket -> bucket.sessionId().equals(key));
+        reportedChanges.keySet().removeIf(bucket -> bucket.sessionId().equals(key));
+        bucketLocks.keySet().removeIf(bucket -> bucket.sessionId().equals(key));
+    }
+
+    private String snapshotKey(Path path) {
+        return normalizeDeclaredPath(path).toString().replace('\\', '/');
     }
 
     public Path root() {

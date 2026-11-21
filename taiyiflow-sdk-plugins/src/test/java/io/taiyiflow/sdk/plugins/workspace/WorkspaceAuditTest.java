@@ -25,6 +25,46 @@ class WorkspaceAuditTest {
     }
 
     @Test
+    void sessionSnapshotsAreIsolatedAndClearable() throws Exception {
+        WorkspaceAudit audit = new WorkspaceAudit(tempDir);
+        Path file = tempDir.resolve("owned.txt");
+        Files.writeString(file, "content");
+        assertFalse(audit.hasSnapshot("s1", file));
+        audit.markSnapshot("s1", file);
+        assertTrue(audit.hasSnapshot("s1", file));
+        assertFalse(audit.hasSnapshot("s2", file));
+        assertFalse(audit.hasSnapshot("s1", tempDir.resolve("never-touched.txt")));
+
+        audit.clearSession("s1");
+        assertFalse(audit.hasSnapshot("s1", file));
+        audit.markSnapshot("s1", file);
+        audit.markSnapshot("s2", file);
+        audit.clear(null, null);
+        assertFalse(audit.hasSnapshot("s1", file));
+        assertFalse(audit.hasSnapshot("s2", file));
+    }
+
+    @Test
+    void clearSessionReleasesBaselinesAndReportedFingerprintsOfThatSessionOnly() throws Exception {
+        WorkspaceAudit audit = new WorkspaceAudit(tempDir);
+        Path file = tempDir.resolve("tracked.txt");
+        Files.writeString(file, "before");
+        WorkspaceAudit.Scan baseline1 = audit.captureBaseline("s1", "run-1");
+        WorkspaceAudit.Scan baseline2 = audit.captureBaseline("s2", "run-1");
+        Files.writeString(file, "after");
+        assertFalse(audit.diffAndRefresh("s1", "run-1", baseline1, java.util.Set.of()).changes().isEmpty());
+        assertTrue(audit.diffAndRefresh("s1", "run-1", baseline1, java.util.Set.of()).changes().isEmpty(),
+                "fingerprints are reported once per bucket");
+        assertFalse(audit.diffAndRefresh("s2", "run-1", baseline2, java.util.Set.of()).changes().isEmpty());
+
+        audit.clearSession("s1");
+        assertFalse(audit.diffAndRefresh("s1", "run-1", baseline1, java.util.Set.of()).changes().isEmpty(),
+                "a cleared session reports the edit again");
+        assertTrue(audit.diffAndRefresh("s2", "run-1", baseline2, java.util.Set.of()).changes().isEmpty(),
+                "other sessions keep their reported fingerprints");
+    }
+
+    @Test
     void diffDetectsCreatesEditsAndDeletesWithBoundedCandidateHashes() throws Exception {
         Path existing = tempDir.resolve("existing.txt");
         Files.writeString(existing, "before");

@@ -105,6 +105,10 @@ public class ShellPlugin implements PluginManager.ContextualToolHandler, AutoClo
         }
 
         List<DeclaredOperation> declared = parseDeclaredOperations(args);
+        for (DeclaredOperation operation : declared) {
+            workspaceAudit.markSnapshot(context.getSessionId(), operation.path());
+            workspaceAudit.markSnapshot(context.getSessionId(), operation.newPath());
+        }
         boolean scanEnabled = shouldScan(args, arguments);
         WorkspaceAudit.Scan baseline = scanEnabled ? captureBaseline(context) : null;
 
@@ -346,6 +350,12 @@ public class ShellPlugin implements PluginManager.ContextualToolHandler, AutoClo
             }
             int scannedChanges = 0;
             for (WorkspaceAudit.Change change : audit.changes()) {
+                // Attribution filter: edits to files this session never wrote/declared are
+                // external process changes and are not reported (create/delete still are).
+                if ("edit".equals(change.type())
+                        && !workspaceAudit.hasSnapshot(context.getSessionId(), change.path())) {
+                    continue;
+                }
                 String key = change.type() + '|' + change.path() + "|null";
                 if (operations.containsKey(key)) {
                     continue;
@@ -385,6 +395,9 @@ public class ShellPlugin implements PluginManager.ContextualToolHandler, AutoClo
         }
         ArrayNode operations = mapper.createArrayNode();
         for (WorkspaceAudit.Change change : audit.changes()) {
+            if ("edit".equals(change.type()) && !entry.hasFileSnapshot(change.path())) {
+                continue;
+            }
             ObjectNode output = operations.addObject();
             output.put("type", change.type());
             output.put("path", change.path().toString());
@@ -574,7 +587,21 @@ public class ShellPlugin implements PluginManager.ContextualToolHandler, AutoClo
     }
 
     public static void register(PluginManager pm, Path workDir, List<String> allowedCommands) {
-        ShellPlugin plugin = new ShellPlugin(workDir, allowedCommands);
+        register(pm, workDir, allowedCommands, DEFAULT_TIMEOUT_SECONDS);
+    }
+
+    public static long defaultTimeoutSeconds() {
+        return DEFAULT_TIMEOUT_SECONDS;
+    }
+
+    public static void register(PluginManager pm, Path workDir, List<String> allowedCommands, long timeoutSeconds) {
+        register(pm, workDir, allowedCommands, timeoutSeconds, new WorkspaceAudit(workDir));
+    }
+
+    /** Register with a shared audit so file-tool writes attribute scan-discovered edits to the session. */
+    public static void register(PluginManager pm, Path workDir, List<String> allowedCommands, long timeoutSeconds,
+                                WorkspaceAudit workspaceAudit) {
+        ShellPlugin plugin = new ShellPlugin(workDir, allowedCommands, timeoutSeconds, workspaceAudit);
         String commandSchema = "{\"command\":{\"type\":\"string\"},\"cwd\":{\"type\":\"string\"},"
                 + "\"background\":{\"type\":\"boolean\"}}";
         pm.register(tool("shell", "Execute a whitelisted command in the sandbox", commandSchema, "command"), plugin);
@@ -606,9 +633,22 @@ public class ShellPlugin implements PluginManager.ContextualToolHandler, AutoClo
                 (PluginManager.ContextualToolHandler) plugin::processCleanup);
         pm.registerSessionHook(new io.taiyiflow.sdk.hooks.SessionHook() {
             @Override
+            public void onFinish(String sessionId) {
+                // Terminal session state (DONE/ERROR/CANCELLED): release this session's audit
+                // snapshots and run buckets so long-running workers do not leak them. Background
+                // processes are deliberately NOT stopped here — they may still be read across
+                // runs after DONE; stopSession stays in onClose below. This hook also covers the
+                // audit instance shared with FilePlugin via BuiltinPlugins.registerAll.
+                plugin.workspaceAudit.clearSession(sessionId);
+            }
+
+            @Override
             public void onClose(String sessionId) {
                 plugin.backgroundProcesses.stopSession(sessionId);
                 plugin.backgroundProcesses.cleanupFinished(sessionId);
+                // Safety net for sessions closed from ERROR/DISCONNECTED without a terminal
+                // finish notification: release their audit state too.
+                plugin.workspaceAudit.clearSession(sessionId);
             }
         });
         pm.registerCloseable(plugin);

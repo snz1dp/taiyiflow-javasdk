@@ -200,6 +200,10 @@ final class BackgroundProcessRegistry implements AutoCloseable {
             return auditResult;
         }
 
+        boolean hasFileSnapshot(Path path) {
+            return audit.hasSnapshot(sessionId, path);
+        }
+
         String status() {
             if (process.isAlive()) {
                 return process.isStopRequested() ? "stopping" : "running";

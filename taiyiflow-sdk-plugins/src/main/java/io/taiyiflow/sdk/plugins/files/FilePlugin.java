@@ -43,6 +43,7 @@ public class FilePlugin {
 
     private final Path sandboxRoot;
     private final AtomicMoveOperation atomicMove;
+    private final io.taiyiflow.sdk.plugins.workspace.WorkspaceAudit workspaceAudit;
 
     public FilePlugin(Path sandboxRoot) {
         this(sandboxRoot, (source, target) -> Files.move(source, target,
@@ -51,8 +52,31 @@ public class FilePlugin {
     }
 
     FilePlugin(Path sandboxRoot, AtomicMoveOperation atomicMove) {
+        this(sandboxRoot, atomicMove, null);
+    }
+
+    FilePlugin(Path sandboxRoot, AtomicMoveOperation atomicMove,
+               io.taiyiflow.sdk.plugins.workspace.WorkspaceAudit workspaceAudit) {
         this.sandboxRoot = sandboxRoot.toAbsolutePath().normalize();
         this.atomicMove = atomicMove;
+        this.workspaceAudit = workspaceAudit;
+    }
+
+    /** Mark successful writes so scan-discovered edits to these paths attribute to this session. */
+    private void markSnapshot(io.taiyiflow.sdk.core.dispatch.ToolExecutionContext context, ToolResult result) {
+        if (workspaceAudit == null || context == null || result == null || !result.isSuccess()) {
+            return;
+        }
+        JsonNode content = result.getResult();
+        if (content == null || !content.hasNonNull("path")) {
+            return;
+        }
+        boolean written = content.path("written").asBoolean(false)
+                || ("applied".equals(content.path("status").asText())
+                        && !content.path("dry_run").asBoolean(false));
+        if (written) {
+            workspaceAudit.markSnapshot(context.getSessionId(), Path.of(content.get("path").asText()));
+        }
     }
 
     public ToolResult readFile(ToolCall toolCall) {
@@ -486,17 +510,34 @@ public class FilePlugin {
     }
 
     public static void register(PluginManager pm, Path sandboxRoot) {
-        FilePlugin plugin = new FilePlugin(sandboxRoot);
+        register(pm, sandboxRoot, null);
+    }
+
+    /** Register with a shared workspace audit (nullable) for scan edit attribution. */
+    public static void register(PluginManager pm, Path sandboxRoot,
+                                io.taiyiflow.sdk.plugins.workspace.WorkspaceAudit workspaceAudit) {
+        FilePlugin plugin = new FilePlugin(sandboxRoot, (source, target) -> Files.move(source, target,
+                LinkOption.NOFOLLOW_LINKS, java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+                java.nio.file.StandardCopyOption.REPLACE_EXISTING), workspaceAudit);
         String pathSchema = "{\"path\":{\"type\":\"string\"}}";
         pm.register(tool("read_file", "Read a UTF-8 file inside the workspace", pathSchema, "path"), plugin::readFile);
         pm.register(tool("write_file", "Write a UTF-8 file inside the workspace",
                 "{\"path\":{\"type\":\"string\"},\"content\":{\"type\":\"string\"}}", "path", "content"),
-                plugin::writeFile);
+                (PluginManager.ContextualToolHandler) (context, call) -> {
+                    ToolResult result = plugin.writeFile(call);
+                    plugin.markSnapshot(context, result);
+                    return result;
+                });
         pm.register(tool("file_edit", "Edit a UTF-8 file with exact string replacement",
                 "{\"path\":{\"type\":\"string\"},\"old_string\":{\"type\":\"string\"},"
                         + "\"new_string\":{\"type\":\"string\"},\"expected_sha256_before\":{\"type\":\"string\"},"
                         + "\"dry_run\":{\"type\":\"boolean\"},\"replace_all\":{\"type\":\"boolean\"}}",
-                "path", "old_string", "new_string"), plugin::editFile);
+                "path", "old_string", "new_string"),
+                (PluginManager.ContextualToolHandler) (context, call) -> {
+                    ToolResult result = plugin.editFile(call);
+                    plugin.markSnapshot(context, result);
+                    return result;
+                });
         pm.register(tool("list_files", "List files inside the workspace", pathSchema), plugin::listFiles);
     }
 

@@ -36,6 +36,19 @@ class MediaUnderstandingPluginTest {
     Path workspace;
 
     @Test
+    void declaresMaxExecutionTimeForWatchdogDerivation() {
+        PluginManager plugins = new PluginManager();
+        RestClient rest = new RestClient("http://127.0.0.1:1", () -> "key", Duration.ofSeconds(1), Map.of());
+        MediaUnderstandingPlugin.register(plugins, rest);
+        assertEquals(Duration.ofMinutes(59), plugins.maxToolExecutionTime());
+
+        PluginManager custom = new PluginManager();
+        new MediaUnderstandingPlugin(rest, Duration.ofSeconds(2),
+                pollOptions(Duration.ofSeconds(3)), pollOptions(Duration.ofSeconds(5))).register(custom);
+        assertEquals(Duration.ofSeconds(5), custom.maxToolExecutionTime());
+    }
+
+    @Test
     void routesBusinessUploadsToDefaultUnderstandingFlows() throws Exception {
         Files.writeString(workspace.resolve("doc.pdf"), "document");
         Files.writeString(workspace.resolve("image.png"), "image");

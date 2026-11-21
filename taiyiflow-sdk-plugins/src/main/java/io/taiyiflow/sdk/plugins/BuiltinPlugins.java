@@ -28,8 +28,17 @@ public final class BuiltinPlugins {
      * Register all built-in plugins with default sandbox settings.
      */
     public static void registerAll(PluginManager pm, Path sandboxRoot, List<String> allowedShellCommands) {
-        ShellPlugin.register(pm, sandboxRoot, allowedShellCommands);
-        FilePlugin.register(pm, sandboxRoot);
+        registerAll(pm, sandboxRoot, allowedShellCommands,
+                io.taiyiflow.sdk.plugins.shell.ShellPlugin.defaultTimeoutSeconds());
+    }
+
+    /** Register all built-in plugins with an explicit shell command timeout (seconds). */
+    public static void registerAll(PluginManager pm, Path sandboxRoot, List<String> allowedShellCommands,
+                                   long shellTimeoutSeconds) {
+        io.taiyiflow.sdk.plugins.workspace.WorkspaceAudit audit =
+                new io.taiyiflow.sdk.plugins.workspace.WorkspaceAudit(sandboxRoot);
+        ShellPlugin.register(pm, sandboxRoot, allowedShellCommands, shellTimeoutSeconds, audit);
+        FilePlugin.register(pm, sandboxRoot, audit);
         SearchPlugin.register(pm, sandboxRoot);
     }
 

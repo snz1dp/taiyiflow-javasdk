@@ -88,20 +88,27 @@ public final class MediaUnderstandingPlugin implements AutoCloseable {
                 + "\"input\":{\"type\":\"string\"},"
                 + "\"input_type\":{\"type\":\"string\"},"
                 + "\"working_directory\":{\"type\":\"string\"}";
+        Duration documentTimeout = synchronousTimeout;
+        Duration imageTimeout = max(synchronousTimeout, imagePollOptions.overallTimeout());
+        Duration audioVideoTimeout = max(synchronousTimeout, audioVideoPollOptions.overallTimeout());
         pluginManager.register(featureTool("document_unstructured",
                 "上传本地非图片文件到服务端文档结构化流程并返回稳定 JSON 结果；图片请使用 image_understanding。",
                 "document_understanding", "{" + common + ",\"output_type\":{\"type\":\"string\"}}"),
-                (PluginManager.ContextualToolHandler) this::document);
+                (PluginManager.ContextualToolHandler) this::document, documentTimeout);
         pluginManager.register(featureTool("image_understanding",
                 "上传本地图像到服务端图像理解流程并返回纯文本结果；浏览器截图理解也复用此能力。",
-                "image_understanding", "{" + common + "}"), (PluginManager.ContextualToolHandler) this::image);
+                "image_understanding", "{" + common + "}"), (PluginManager.ContextualToolHandler) this::image, imageTimeout);
         pluginManager.register(featureTool("audio_understanding",
                 "上传本地音频到服务端音频理解流程，返回语音转写和内容分析结果。",
-                "audio_understanding", "{" + common + "}"), (PluginManager.ContextualToolHandler) this::audio);
+                "audio_understanding", "{" + common + "}"), (PluginManager.ContextualToolHandler) this::audio, audioVideoTimeout);
         pluginManager.register(featureTool("video_understanding",
                 "上传本地视频到服务端视频理解流程，返回画面、语音及整体内容分析结果。",
-                "video_understanding", "{" + common + "}"), (PluginManager.ContextualToolHandler) this::video);
+                "video_understanding", "{" + common + "}"), (PluginManager.ContextualToolHandler) this::video, audioVideoTimeout);
         pluginManager.registerCloseable(this);
+    }
+
+    private static Duration max(Duration a, Duration b) {
+        return a.compareTo(b) >= 0 ? a : b;
     }
 
     public ToolResult document(ToolExecutionContext context, ToolCall call) throws Exception {
