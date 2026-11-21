@@ -57,13 +57,37 @@ public class DigitalWorkerAutoConfiguration {
                 .concurrency(properties.getConcurrency())
                 .connectTimeout(properties.getConnectTimeout())
                 .drainTimeout(properties.getDrainTimeout())
+                .streamIdleTimeout(properties.getStreamIdleTimeout())
+                .toolExecutionTimeout(properties.getToolExecutionTimeout())
+                .maxSessionConcurrency(properties.getMaxSessionConcurrency())
                 .requestTimeout(platform.getRequestTimeout())
                 .recoveryPolicy(properties.getRecoveryPolicy())
                 .permissionPolicy(properties.getPermissionPolicy())
+                .permissionSettings(properties.getPermission().toSettings(properties.getPermissionPolicy()))
                 .approvalChannel(properties.getApprovalChannel())
+                .requestDefaults(properties.getRequest().toRequestDefaults())
+                .instructionDirectories(properties.getInstructions().toDirectories())
                 .identityValidator(identityValidator.getIfAvailable());
         if (properties.getWorkerId() != null && !properties.getWorkerId().isBlank()) {
             builder.identity(WorkerIdentity.of(properties.getWorkerId(), properties.getDisplayName()));
+        }
+        if (properties.isBuiltinTools()) {
+            builder.enableBuiltinTools(properties.getAllowedShellCommands());
+        }
+        if (properties.getShellCommandTimeout() != null) {
+            builder.shellCommandTimeout(properties.getShellCommandTimeout());
+        }
+        if (properties.getSubtaskMaxTasks() != null) {
+            builder.subtaskMaxTasks(properties.getSubtaskMaxTasks());
+        }
+        if (properties.getSubtaskMaxParallelism() != null) {
+            builder.subtaskMaxParallelism(properties.getSubtaskMaxParallelism());
+        }
+        if (properties.getSubtaskTimeout() != null) {
+            builder.subtaskTimeout(properties.getSubtaskTimeout());
+        }
+        if (properties.getRequest().getClientType() != null && !properties.getRequest().getClientType().isBlank()) {
+            builder.clientType(properties.getRequest().getClientType());
         }
         WorkerRegistrar registrar = workerRegistrar.getIfAvailable();
         if (registrar != null) {

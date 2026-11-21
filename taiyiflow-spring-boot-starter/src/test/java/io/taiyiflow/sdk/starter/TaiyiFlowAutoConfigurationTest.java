@@ -87,6 +87,53 @@ class TaiyiFlowAutoConfigurationTest {
     }
 
     @Test
+    void bindsFineGrainedPermissionSettings(@TempDir Path sandbox) {
+        runner(sandbox)
+                .withPropertyValues(
+                        "taiyiflow.permission-policy=AUTO",
+                        "taiyiflow.permission.rules[0].action=deny",
+                        "taiyiflow.permission.rules[0].command-prefix=rm",
+                        "taiyiflow.permission.rules[1].action=bogus",
+                        "taiyiflow.permission.rules[1].tool-name=shell",
+                        "taiyiflow.permission.write-confirmation=direct",
+                        "taiyiflow.permission.browser-permission-mode=skip_all_permission_checks",
+                        "taiyiflow.permission.categories.shell=auto",
+                        "taiyiflow.permission.categories.bogus=auto")
+                .run(context -> {
+                    if (context.getStartupFailure() != null) {
+                        throw new AssertionError("Application context failed", context.getStartupFailure());
+                    }
+                    TaiyiAgent agent = context.getBean(TaiyiAgent.class);
+                    var settings = agent.getPermissionGate().getSettings();
+                    assertEquals(io.taiyiflow.sdk.hooks.PermissionPolicy.AUTO, settings.getPolicy());
+                    assertEquals(io.taiyiflow.sdk.core.security.WriteConfirmation.DIRECT,
+                            settings.getWriteConfirmation());
+                    assertEquals(io.taiyiflow.sdk.core.security.BrowserPermissionMode.SKIP_ALL_PERMISSION_CHECKS,
+                            settings.getBrowserPermissionMode());
+                    assertEquals(2, settings.getRules().size());
+                    assertEquals(io.taiyiflow.sdk.core.security.PermissionRule.Action.ASK,
+                            settings.getRules().get(1).action());
+                    assertEquals(1, settings.getCategoryPolicies().size());
+                    assertEquals(io.taiyiflow.sdk.hooks.PermissionPolicy.AUTO,
+                            settings.getCategoryPolicies().get(io.taiyiflow.sdk.core.security.ToolCategory.SHELL));
+                });
+    }
+
+    @Test
+    void permissionDefaultsAreReadonlyConfirmAsk(@TempDir Path sandbox) {
+        runner(sandbox).run(context -> {
+            TaiyiAgent agent = context.getBean(TaiyiAgent.class);
+            var settings = agent.getPermissionGate().getSettings();
+            assertEquals(io.taiyiflow.sdk.hooks.PermissionPolicy.READONLY, settings.getPolicy());
+            assertEquals(io.taiyiflow.sdk.core.security.WriteConfirmation.CONFIRM,
+                    settings.getWriteConfirmation());
+            assertEquals(io.taiyiflow.sdk.core.security.BrowserPermissionMode.ASK,
+                    settings.getBrowserPermissionMode());
+            assertTrue(settings.getRules().isEmpty());
+        });
+    }
+
+    @Test
     void configuresMediaAndSkillTools(@TempDir Path sandbox) throws Exception {
         Path skill = sandbox.resolve("skills/demo");
         java.nio.file.Files.createDirectories(skill);
@@ -174,6 +221,86 @@ class TaiyiFlowAutoConfigurationTest {
                     assertNull(context.getStartupFailure());
                     assertFalse(context.containsBean("taiyiAgent"));
                 });
+    }
+
+    @Test
+    void appliesRequestDefaultsAndInstructionDirectories(@TempDir Path sandbox) {
+        runner(sandbox)
+                .withPropertyValues(
+                        "taiyiflow.request.model=qwen-max",
+                        "taiyiflow.request.reasoning=true",
+                        "taiyiflow.request.auto-loop-enabled=true",
+                        "taiyiflow.request.auto-loop-max-rounds=6",
+                        "taiyiflow.request.image-generation=ON",
+                        "taiyiflow.request.group-id=group-1",
+                        "taiyiflow.request.relation-sessions=s-a,s-b",
+                        "taiyiflow.request.knowledge-scopes=scope-a,scope-b",
+                        "taiyiflow.request.knowledge-docs=doc-1",
+                        "taiyiflow.instructions.directories=" + sandbox.resolve("instructions"))
+                .run(context -> {
+                    TaiyiAgent agent = context.getBean(TaiyiAgent.class);
+                    assertEquals("qwen-max", agent.getRequestDefaults().getModel());
+                    assertEquals(Boolean.TRUE, agent.getRequestDefaults().getReasoning());
+                    assertTrue(agent.getRequestDefaults().isAutoLoopEnabled());
+                    assertEquals(6, agent.getRequestDefaults().getAutoLoopMaxRounds());
+                    assertEquals(io.taiyiflow.sdk.RequestDefaults.ImageGeneration.ON,
+                            agent.getRequestDefaults().getImageGeneration());
+                    assertEquals("group-1", agent.getRequestDefaults().getGroupId());
+                    assertEquals(java.util.List.of("s-a", "s-b"), agent.getRequestDefaults().getRelationSessions());
+                    assertEquals("scope-a", agent.getRequestDefaults().getKnowledgeScopes().get(0).asText());
+                    assertEquals("scope-b", agent.getRequestDefaults().getKnowledgeScopes().get(1).asText());
+                    assertEquals("doc-1", agent.getRequestDefaults().getKnowledgeDocs().get(0).asText());
+                    assertEquals("chat", agent.getRequestDefaults().getInputType());
+                    assertEquals("chat", agent.getRequestDefaults().getOutputType());
+                    assertEquals(java.util.List.of(sandbox.resolve("instructions").toAbsolutePath().normalize()),
+                            agent.getInstructionDirectories());
+                });
+        runner(sandbox).run(context -> {
+            TaiyiAgent agent = context.getBean(TaiyiAgent.class);
+            assertFalse(agent.getRequestDefaults().isAutoLoopEnabled());
+            assertEquals("chat", agent.getRequestDefaults().getInputType());
+            assertEquals(io.taiyiflow.sdk.RequestDefaults.ImageGeneration.AUTO,
+                    agent.getRequestDefaults().getImageGeneration());
+            assertTrue(agent.getInstructionDirectories().isEmpty());
+        });
+    }
+
+    @Test
+    void appliesWatchdogTimeouts(@TempDir Path sandbox) {
+        runner(sandbox)
+                .withPropertyValues("taiyiflow.stream-idle-timeout=0s", "taiyiflow.tool-execution-timeout=40m")
+                .run(context -> {
+                    TaiyiAgent agent = context.getBean(TaiyiAgent.class);
+                    assertEquals(Duration.ZERO, agent.getStreamIdleTimeout());
+                    assertEquals(Duration.ofMinutes(40), agent.getToolExecutionTimeout());
+                });
+        runner(sandbox).run(context -> {
+            TaiyiAgent agent = context.getBean(TaiyiAgent.class);
+            assertEquals(Duration.ofSeconds(1200), agent.getStreamIdleTimeout());
+            assertNull(agent.getToolExecutionTimeout());
+        });
+    }
+
+    @Test
+    void appliesClientTypeConcurrencyAndShellTimeoutProperties(@TempDir Path sandbox) {
+        runner(sandbox)
+                .withPropertyValues(
+                        "taiyiflow.request.client-type=desktop",
+                        "taiyiflow.max-session-concurrency=5",
+                        "taiyiflow.plugins.shell=true",
+                        "taiyiflow.plugins.shell-command-timeout=45s")
+                .run(context -> {
+                    assertNull(context.getStartupFailure());
+                    TaiyiAgent agent = context.getBean(TaiyiAgent.class);
+                    assertEquals("desktop", agent.getClientType());
+                    assertEquals(5, agent.getMaxSessionConcurrency());
+                    assertTrue(agent.getPluginManager().hasHandler("shell"));
+                    assertEquals(Duration.ofSeconds(45),
+                            context.getBean(TaiyiFlowProperties.class).getPlugins().getShellCommandTimeout());
+                });
+        runner(sandbox).run(context -> {
+            assertEquals("device", context.getBean(TaiyiAgent.class).getClientType());
+        });
     }
 
     private static ApplicationContextRunner runner(Path sandbox) {

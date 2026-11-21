@@ -19,6 +19,7 @@ import org.springframework.context.annotation.Bean;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 
 /**
  * Spring Boot auto-configuration for TaiyiFlow SDK.
@@ -48,14 +49,24 @@ public class TaiyiFlowAutoConfiguration {
                 .flowId(properties.getFlowId())
                 .connectTimeout(properties.getConnectTimeout())
                 .requestTimeout(properties.getRequestTimeout())
+                .streamIdleTimeout(properties.getStreamIdleTimeout())
+                .toolExecutionTimeout(properties.getToolExecutionTimeout())
                 .maxSessions(properties.getMaxSessions())
+                .maxSessionConcurrency(properties.getMaxSessionConcurrency())
                 .eventQueueCapacity(properties.getEventQueueCapacity())
                 .sseFallbackEnabled(properties.isSseFallbackEnabled())
                 .recoveryPolicy(properties.getRecoveryPolicy())
                 .recoveryBackoff(properties.getRecoveryMinBackoff(), properties.getRecoveryMaxBackoff())
                 .recoveryMaxAttempts(properties.getRecoveryMaxAttempts())
                 .autoRestartOnExecutionLoss(properties.isAutoRestartOnExecutionLoss())
-                .permissionTimeout(properties.getPermissionTimeout());
+                .permissionTimeout(properties.getPermissionTimeout())
+                .permissionPolicy(properties.getPermissionPolicy())
+                .permissionSettings(properties.getPermission().toSettings(properties.getPermissionPolicy()))
+                .requestDefaults(properties.getRequest().toRequestDefaults())
+                .instructionDirectories(properties.getInstructions().toDirectories());
+        if (properties.getRequest().getClientType() != null && !properties.getRequest().getClientType().isBlank()) {
+            builder.clientType(properties.getRequest().getClientType());
+        }
 
         streamHooks.orderedStream().forEach(builder::onStream);
         toolHooks.orderedStream().forEach(builder::onToolExecution);
@@ -77,11 +88,17 @@ public class TaiyiFlowAutoConfiguration {
 
         // Register built-in plugins
 
+        io.taiyiflow.sdk.plugins.workspace.WorkspaceAudit workspaceAudit =
+                properties.getPlugins().isShell() || properties.getPlugins().isFiles()
+                        ? new io.taiyiflow.sdk.plugins.workspace.WorkspaceAudit(sandbox) : null;
         if (properties.getPlugins().isShell()) {
-            ShellPlugin.register(agent.getPluginManager(), sandbox, properties.getAllowedShellCommands());
+            Duration shellTimeout = properties.getPlugins().getShellCommandTimeout();
+            ShellPlugin.register(agent.getPluginManager(), sandbox, properties.getAllowedShellCommands(),
+                    shellTimeout != null ? shellTimeout.toSeconds() : ShellPlugin.defaultTimeoutSeconds(),
+                    workspaceAudit);
         }
         if (properties.getPlugins().isFiles()) {
-            FilePlugin.register(agent.getPluginManager(), sandbox);
+            FilePlugin.register(agent.getPluginManager(), sandbox, workspaceAudit);
         }
         if (properties.getPlugins().isSearch()) {
             SearchPlugin.register(agent.getPluginManager(), sandbox);
