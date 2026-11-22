@@ -597,3 +597,37 @@ AH–AL SDK 侧完成后，按用户指令对全部未提交改动做**实现缺
 - `PlatformProbeClientTest`：开放探针不带鉴权、version 带鉴权。
 - `ChatRequestTest`：`relation_sessions` 规范化与空省略。
 - `ResumeLeaseRegistryTest`、`AgentSessionConcurrencyQuotaTest`、`DangerousCommandGuardTest`/`PermissionGateTest` 等随 H1/H3/M1 落地。
+
+## 十三、授权到期处理核查与增强（2026-11-22）
+
+按用户指令核查 SDK 是否考虑平台**产品授权（license）到期**处理，以 `../taiyiflow-dev` 后端为权威。结论：重试安全此前已被动覆盖（4003/403 归非可恢复终态，不会重试风暴），但缺少**专门识别、可操作告警与到期预警**。本次按最小改动补齐，不新增 SPI、不改动平台权威。
+
+### 13.1 后端权威行为（核查依据）
+
+- 授权硬限制守卫 `api/v1/license_guard.py:verify_license_active` 以**入口显式依赖**挂在对话/智能体执行入口（`POST /run/{flow}`、`/run/{flow}/stream`、chat build），到期抛 **HTTP 403**，detail 为纯中文文案（无稳定机器码）：`LICENSE_EXPIRED_DETAIL="产品服务授权已到期，请联系厂商购买授权"` 或 `LICENSE_NOT_STARTED_DETAIL="产品服务授权尚未生效，请核对授权开始时间"`（`settings/utils.py:78-80`）。
+- Run WS 入口（`endpoints.py:1212-1220`）到期先推 `error` 事件再关连接：`_send_entry_error_and_close` → `StreamData(event="error", data={error:<中文>, type:"license_expired", persisted:false})`（`processing/process.py:_build_error_event_data`，机器码在 **data.type**），随后 `close(code=4003, reason=<中文>)`。
+- 在线终端数超限（license 派生）走 WS `error_code="license_terminal_limit"`（`services/client/service.py:622`）。
+- **自救入口天然放行**：`/version`、`/config`、`/settings`、登录不挂守卫。`/config.license` 透出 `{start_time,end_time,user_limit,user_count,terminal_limit,expired,licensed}`（`endpoints.py:1829-1842`、`schemas.py:2799-2812`），契约规定**仅展示/预警**，到期硬拦截在运行入口（`doc/backend/api/运行时配置接口.md`）。`expired` 含宽限期（`LICENSE_GRACE_DAYS=7`）耗尽与授权尚未开始；`end_time=None` 表永久。
+
+### 13.2 SDK 侧增强（最小改动）
+
+- **专门识别**：新增 `transport/envelope/LicenseExpiredException`（镜像后端 `license_expired`/`license_terminal_limit` 机器码与两条中文 detail 常量；`isLicenseCode`/`isLicenseDetail`/`fromCloseReason`；纯 envelope 类，不反向依赖 rest，避免包环）。`StreamEvent.getErrorType()` 读 `data.type`。
+- **三通道归一为独立非可恢复终态**（`AgentSessionImpl`）：① 流内 `error` 事件 `data.type` 命中 license 码 → `terminalStreamError=LicenseExpiredException`；② REST/SSE **HTTP 403** detail 命中两条常量 → `asLicenseError` 包装后 `failRecovery`；③ WS **close-only 回退**（未先收到 error 事件）`fromCloseReason` 从 4003 reason 提取。三者均置 `ERROR` 终态、不重试，`StreamHook.onError` 收到可区分类型与可操作中文文案，与配额/权限（generic `RestException`/`RuntimeException`）区分。
+- **到期预警访问器**：`ServiceConfig.license()/licenseExpired()/licenseEndTime()` 读 `/config.license`（仅展示/预警，缺省 false/null）。经既有 `config().getServiceConfig()` 可达，与 `quotaCredits()/probes()` 同为**可选预检**模式，不自动强制。
+- **数字人启动预警**：`DigitalWorker.start()` 复用已拉取的 `ServiceConfig`，`licenseExpired()` 为真时经**既有 `WorkerHook.onError("license", …)`** 发非阻塞预警（不新增 SPI、不阻断启动——`/config` 为自救入口、授权可恢复）；运行期每个任务对话仍由运行入口 403/4003 硬拦截并归 license 终态。
+
+### 13.3 自救与恢复
+
+- 授权续期后，豁免的 `/config`（`license.expired=false`）与 `/version` 报告恢复；新发起的对话/任务即恢复正常。已终态 `ERROR` 的会话不自动重放（状态未知/副作用约束），由使用方重新发起。
+- 协同控制 WS（任务派发）本身不挂 license 守卫；硬拦截发生在任务内的运行/对话执行入口，故 SDK 执行路径已全覆盖。
+
+### 13.4 回归测试新增（24）
+
+- `StreamEventTest`：`getErrorType()` 读机器码与缺省 null。
+- `LicenseExpiredExceptionTest`：码/文案/close-reason 识别精确匹配，非 license 不误判。
+- `ServiceConfigLicenseTest`：license 摘要/到期/永久 null/缺省/防御性拷贝。
+- `AgentSessionLicenseExpiryTest`：SSE 403 到期/尚未开始、流内 `license_expired`/`license_terminal_limit` error 事件 → 独立 license 终态（ERROR、不重试）；非 license 403 与 `quota_session_exceeded` error 事件保持 generic，验证不过度归类。
+
+### 13.5 责任边界
+
+本节为 SDK 侧行为证明（本地 HttpServer 模拟后端两通道）；真实环境授权到期/续期验收仍属第五节用户职责，不被替代。
