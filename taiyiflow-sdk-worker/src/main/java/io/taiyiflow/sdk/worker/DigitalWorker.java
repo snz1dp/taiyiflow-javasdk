@@ -188,6 +188,14 @@ public final class DigitalWorker {
                 log.warn("Failed to load /config quotas; keeping local subtask limits: {}", e.getMessage());
             }
             subtaskOrchestrator = createSubtaskOrchestrator(serviceConfig);
+            if (serviceConfig != null && serviceConfig.licenseExpired()) {
+                // Pre-warning only: /config.license is display-grade and the endpoint is license-exempt,
+                // so startup is not blocked. Run/chat entries still enforce expiry with HTTP 403 / WS 4003.
+                notifyHooks(hook -> hook.onError("license",
+                        new io.taiyiflow.sdk.transport.envelope.LicenseExpiredException(
+                                io.taiyiflow.sdk.transport.envelope.LicenseExpiredException.ERROR_CODE,
+                                "平台授权已到期或尚未生效（/config.license.expired），对话与任务执行将被拒绝，请联系厂商核对授权")));
+            }
             readyLatch = new CountDownLatch(1);
             collaboration = new CollaborationPlugin(
                     baseUrl, auth::accessToken, role.protocolName(), clientId, deviceId, instanceId, Map.of())

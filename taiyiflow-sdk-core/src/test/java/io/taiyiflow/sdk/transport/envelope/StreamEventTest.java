@@ -33,6 +33,17 @@ class StreamEventTest {
         StreamEvent event = mapper.readValue(json, StreamEvent.class);
         assertTrue(event.isError());
         assertEquals("something broke", event.getErrorMessage());
+        assertEquals("test", event.getErrorType());
+    }
+
+    @Test
+    void errorTypeReadsMachineCodeAndIsNullWhenAbsent() throws Exception {
+        StreamEvent license = mapper.readValue(
+                "{\"event\":\"error\",\"data\":{\"error\":\"产品服务授权已到期，请联系厂商购买授权\",\"type\":\"license_expired\",\"persisted\":false}}",
+                StreamEvent.class);
+        assertEquals("license_expired", license.getErrorType());
+        assertNull(mapper.readValue("{\"event\":\"error\",\"data\":{\"error\":\"x\"}}", StreamEvent.class).getErrorType());
+        assertNull(new StreamEvent("error", null).getErrorType());
     }
 
     @Test

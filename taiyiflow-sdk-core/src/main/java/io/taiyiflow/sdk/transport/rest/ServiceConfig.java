@@ -77,6 +77,32 @@ public final class ServiceConfig {
         return value != null && value.isBoolean() && value.booleanValue();
     }
 
+    /**
+     * Server license summary from /config ({@code start_time/end_time/user_limit/user_count/
+     * terminal_limit/expired/licensed}); display and pre-warning only. Expiry is enforced at the
+     * run/chat entries with HTTP 403, not here. Null when the server omits the license object.
+     */
+    public JsonNode license() {
+        JsonNode value = raw.get("license");
+        return value != null && value.isObject() ? value.deepCopy() : null;
+    }
+
+    /** True when /config reports the license expired or not yet started; false when absent. */
+    public boolean licenseExpired() {
+        JsonNode value = raw.get("license");
+        return value != null && value.path("expired").asBoolean(false);
+    }
+
+    /** License end_time (ISO text) for pre-warning; null when absent or permanent. */
+    public String licenseEndTime() {
+        JsonNode value = raw.get("license");
+        if (value == null) {
+            return null;
+        }
+        JsonNode end = value.get("end_time");
+        return end != null && end.isTextual() ? end.asText() : null;
+    }
+
     public JsonNode raw() { return raw.deepCopy(); }
 
     private String requiredText(String name) {

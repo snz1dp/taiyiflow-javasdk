@@ -102,6 +102,15 @@ public class StreamEvent {
         return error.isTextual() ? error.asText() : error.toString();
     }
 
+    /** Machine-readable error code on an {@code error} event ({@code data.type}), e.g. license_expired. */
+    public String getErrorType() {
+        if (data == null) {
+            return null;
+        }
+        JsonNode type = data.get("type");
+        return type != null && type.isTextual() ? type.asText() : null;
+    }
+
     @Override
     public String toString() {
         return "StreamEvent{event='" + event + "', data=" + data + '}';

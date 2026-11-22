@@ -27,6 +27,7 @@ import io.taiyiflow.sdk.transport.envelope.AgentLoopControlResult;
 import io.taiyiflow.sdk.transport.envelope.ChatRequest;
 import io.taiyiflow.sdk.transport.envelope.ClientToolCallParser;
 import io.taiyiflow.sdk.transport.envelope.FlowMetadata;
+import io.taiyiflow.sdk.transport.envelope.LicenseExpiredException;
 import io.taiyiflow.sdk.transport.envelope.ResumableCheckpoint;
 import io.taiyiflow.sdk.transport.envelope.StreamEvent;
 import io.taiyiflow.sdk.transport.envelope.ToolCall;
@@ -1143,7 +1144,10 @@ public class AgentSessionImpl implements AgentSession {
             return;
         }
         if (!serverCloseReceived) {
-            if (isNonRecoverableClose(reason)) {
+            LicenseExpiredException license = LicenseExpiredException.fromCloseReason(reason);
+            if (license != null) {
+                failRecovery(generation, license);
+            } else if (isNonRecoverableClose(reason)) {
                 failRecovery(generation, new IllegalStateException(reason));
             } else {
                 beginDisconnect(generation, reason, null);
@@ -1167,7 +1171,7 @@ public class AgentSessionImpl implements AgentSession {
         }
         log.error("Session {} stream error", sessionId, error);
         if (isNonRecoverable(error)) {
-            failRecovery(generation, error);
+            failRecovery(generation, asLicenseError(error));
         } else {
             beginDisconnect(generation, null, error);
         }
@@ -1470,6 +1474,19 @@ public class AgentSessionImpl implements AgentSession {
                 || message.contains("SSE request failed: 422"));
     }
 
+    /** Surface a license-derived HTTP 403 (REST/SSE) as the distinct terminal type; other errors pass through. */
+    private static Throwable asLicenseError(Throwable error) {
+        Throwable current = error instanceof CompletionException && error.getCause() != null
+                ? error.getCause() : error;
+        if (current instanceof RestClient.RestException rest) {
+            String detail = rest.getDetailCode();
+            if (LicenseExpiredException.isLicenseDetail(detail)) {
+                return new LicenseExpiredException(LicenseExpiredException.ERROR_CODE, detail);
+            }
+        }
+        return error;
+    }
+
     private static String text(JsonNode node, String field) {
         JsonNode value = node == null ? null : node.get(field);
         return value != null && value.isTextual() && !value.asText().isBlank() ? value.asText() : null;
@@ -1616,8 +1633,14 @@ public class AgentSessionImpl implements AgentSession {
             handleClientToolEvent(generation, event, dispatcher, resultReporter);
         } else if (event.isError()) {
             String errorMsg = event.getErrorMessage();
-            terminalStreamError = new RuntimeException(
-                    "Agent error: " + (errorMsg != null ? errorMsg : "Unknown error"));
+            String errorType = event.getErrorType();
+            if (LicenseExpiredException.isLicenseCode(errorType)) {
+                terminalStreamError = new LicenseExpiredException(errorType,
+                        errorMsg != null ? errorMsg : LicenseExpiredException.EXPIRED_DETAIL);
+            } else {
+                terminalStreamError = new RuntimeException(
+                        "Agent error: " + (errorMsg != null ? errorMsg : "Unknown error"));
+            }
         }
     }
 
